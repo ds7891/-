@@ -58,9 +58,11 @@ import me.rerere.hugeicons.stroke.Delete01
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.datastore.findModelById
 import me.rerere.rikkahub.data.datastore.findProvider
+import me.rerere.rikkahub.data.ai.mcp.McpServerConfig
 import me.rerere.rikkahub.data.model.DEFAULT_SUB_AGENTS
 import me.rerere.rikkahub.data.model.KNOWN_SUB_AGENT_TOOLS
 import me.rerere.rikkahub.data.model.SubAgent
+import me.rerere.rikkahub.data.model.mcpSubAgentToolOptions
 import me.rerere.rikkahub.ui.components.nav.BackButton
 import me.rerere.rikkahub.ui.components.ui.AutoAIIcon
 import me.rerere.rikkahub.ui.components.ui.CardGroup
@@ -221,8 +223,8 @@ fun SettingSubAgentPage(vm: SettingVM = koinViewModel()) {
         }
     }
 
-    SubAgentEditModal(creationState, settings.providers)
-    SubAgentEditModal(editState, settings.providers)
+    SubAgentEditModal(creationState, settings.providers, settings.mcpServers)
+    SubAgentEditModal(editState, settings.providers, settings.mcpServers)
 
     RikkaConfirmDialog(
         show = showRestoreDialog,
@@ -353,6 +355,7 @@ private fun SubAgentItem(
 private fun SubAgentEditModal(
     state: EditState<SubAgent>,
     providers: List<ProviderSetting>,
+    mcpServers: List<McpServerConfig>,
 ) {
     state.EditStateContent { agent, update ->
         ModalBottomSheet(
@@ -477,7 +480,7 @@ private fun SubAgentEditModal(
                                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                                 verticalArrangement = Arrangement.spacedBy(8.dp),
                             ) {
-                                KNOWN_SUB_AGENT_TOOLS.forEach { (toolName, label) ->
+                                (KNOWN_SUB_AGENT_TOOLS + mcpSubAgentToolOptions(mcpServers)).forEach { (toolName, label) ->
                                     val selected = toolName in agent.toolNames
                                     FilterChip(
                                         selected = selected,

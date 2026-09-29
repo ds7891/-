@@ -6,6 +6,7 @@ import kotlinx.serialization.json.jsonObject
 import me.rerere.ai.core.Tool
 import me.rerere.ai.provider.BuiltInTools
 import me.rerere.ai.provider.Model
+import me.rerere.rikkahub.data.ai.SubAgentLiveStore
 import me.rerere.rikkahub.data.ai.SubAgentRunner
 import me.rerere.rikkahub.data.ai.mcp.McpManager
 import me.rerere.rikkahub.data.ai.tools.local.LocalTools
@@ -36,6 +37,7 @@ class ChatToolFactory(
     private val skillManager: SkillManager,
     private val workspaceRepository: WorkspaceRepository,
     private val subAgentRunner: SubAgentRunner,
+    private val subAgentLiveStore: SubAgentLiveStore,
 ) {
     suspend fun createTools(
         settings: Settings,
@@ -104,6 +106,7 @@ class ChatToolFactory(
             callerModel = model,
             runner = subAgentRunner,
             baseTools = tools,
+            liveStore = subAgentLiveStore,
         )
     }
 

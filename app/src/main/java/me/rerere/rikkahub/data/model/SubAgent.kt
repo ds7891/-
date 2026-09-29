@@ -2,6 +2,7 @@ package me.rerere.rikkahub.data.model
 
 import kotlinx.serialization.Serializable
 import kotlin.uuid.Uuid
+import me.rerere.rikkahub.data.ai.mcp.McpServerConfig
 
 /**
  * 子智能体（Sub-Agent）配置。
@@ -135,3 +136,21 @@ val KNOWN_SUB_AGENT_TOOLS: List<Pair<String, String>> = listOf(
     "get_screen_time" to "屏幕使用时间",
     "use_skill" to "使用技能",
 )
+
+/**
+ * 把已启用的 MCP 服务器里的工具转成可勾选的白名单项，用于增强子智能体。
+ *
+ * 工具名的格式与 [me.rerere.rikkahub.data.ai.tools.ChatToolFactory] 注册 MCP 工具时保持一致，
+ * 即 `mcp__{serverName}__{toolName}`，这样勾选后子智能体就能真正取到该工具。
+ */
+fun mcpSubAgentToolOptions(servers: List<McpServerConfig>): List<Pair<String, String>> =
+    servers
+        .filter { it.commonOptions.enable }
+        .flatMap { server ->
+            val serverName = server.commonOptions.name
+            server.commonOptions.tools
+                .filter { it.enable && it.name.isNotBlank() }
+                .map { tool ->
+                    "mcp__${serverName}__${tool.name}" to "MCP·$serverName·${tool.name}"
+                }
+        }

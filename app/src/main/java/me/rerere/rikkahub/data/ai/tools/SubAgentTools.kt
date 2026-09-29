@@ -1,5 +1,6 @@
 package me.rerere.rikkahub.data.ai.tools
 
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -14,7 +15,9 @@ import me.rerere.ai.core.InputSchema
 import me.rerere.ai.core.Tool
 import me.rerere.ai.provider.Model
 import me.rerere.ai.ui.UIMessagePart
+import me.rerere.rikkahub.data.ai.SubAgentLiveStore
 import me.rerere.rikkahub.data.ai.SubAgentRunner
+import me.rerere.rikkahub.data.ai.ToolCallContext
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.SubAgent
@@ -42,13 +45,14 @@ fun createSubAgentTools(
     callerModel: Model,
     runner: SubAgentRunner,
     baseTools: List<Tool>,
+    liveStore: SubAgentLiveStore,
 ): List<Tool> {
     val agents = settings.subAgents.filter { it.enabled && it.name.isNotBlank() }
     if (agents.isEmpty()) return emptyList()
 
     return listOf(
-        buildDispatchTool(agents, settings, callerAssistant, callerModel, runner, baseTools),
-        buildDiscussTool(agents, settings, callerAssistant, callerModel, runner, baseTools),
+        buildDispatchTool(agents, settings, callerAssistant, callerModel, runner, baseTools, liveStore),
+        buildDiscussTool(agents, settings, callerAssistant, callerModel, runner, baseTools, liveStore),
     )
 }
 
@@ -59,6 +63,7 @@ private fun buildDispatchTool(
     callerModel: Model,
     runner: SubAgentRunner,
     baseTools: List<Tool>,
+    liveStore: SubAgentLiveStore,
 ): Tool = Tool(
     name = DISPATCH_SUB_AGENTS_TOOL,
     description = """
@@ -116,6 +121,11 @@ private fun buildDispatchTool(
         val assignments = root["assignments"]?.jsonArray ?: JsonArray(emptyList())
         val outputs = mutableListOf<String>()
         val turns = mutableListOf<SubAgentRunner.Turn>()
+        // 当前工具调用 id，用于把子智能体的过程实时写到界面
+        val liveKey = currentCoroutineContext()[ToolCallContext]?.toolCallId
+        if (liveKey != null) {
+            liveStore.setHeader(liveKey, title = toolTitle.ifBlank { null })
+        }
         assignments.forEach { element ->
             val obj = element.jsonObject
             val agentName = obj["agent"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
@@ -125,7 +135,18 @@ private fun buildDispatchTool(
                 agent == null -> outputs += "### $agentName\n[错误] 未找到该子智能体。可用子智能体：${agents.joinToString("、") { it.name }}"
                 task.isBlank() -> outputs += "### ${agent.name}\n[错误] 任务描述为空。"
                 else -> {
-                    val turn = runner.runTask(settings, callerAssistant, callerModel, agent, task, baseTools)
+                    val liveIndex = turns.size
+                    val turn = runner.runTask(
+                        settings = settings,
+                        callerAssistant = callerAssistant,
+                        callerModel = callerModel,
+                        agent = agent,
+                        task = task,
+                        availableTools = baseTools,
+                        onTurnUpdate = { updated ->
+                            if (liveKey != null) liveStore.upsertTurn(liveKey, liveIndex, updated)
+                        },
+                    )
                     turns += turn
                     outputs += formatTurn(turn)
                 }
@@ -146,6 +167,7 @@ private fun buildDiscussTool(
     callerModel: Model,
     runner: SubAgentRunner,
     baseTools: List<Tool>,
+    liveStore: SubAgentLiveStore,
 ): Tool = Tool(
     name = DISCUSS_SUB_AGENTS_TOOL,
     description = """
@@ -187,6 +209,12 @@ private fun buildDiscussTool(
             .take(MAX_DISCUSSION_AGENTS)
         val rounds = root["rounds"]?.jsonPrimitive?.intOrNull ?: 2
 
+        // 当前工具调用 id，用于把各子智能体的发言实时写到界面
+        val liveKey = currentCoroutineContext()[ToolCallContext]?.toolCallId
+        if (liveKey != null && topic.isNotBlank()) {
+            liveStore.setHeader(liveKey, topic = topic)
+        }
+
         var turns: List<SubAgentRunner.Turn> = emptyList()
         val text = when {
             topic.isBlank() -> "[错误] 讨论主题不能为空。"
@@ -200,6 +228,9 @@ private fun buildDiscussTool(
                     topic = topic,
                     rounds = rounds,
                     availableTools = baseTools,
+                    onTurnUpdate = { index, turn ->
+                        if (liveKey != null) liveStore.upsertTurn(liveKey, index, turn)
+                    },
                 )
                 buildString {
                     appendLine("## 智能体探讨：$topic")

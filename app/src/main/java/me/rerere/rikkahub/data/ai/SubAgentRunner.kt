@@ -13,6 +13,8 @@ import me.rerere.rikkahub.data.model.READ_ONLY_BLOCKED_TOOLS
 import me.rerere.rikkahub.data.model.SubAgent
 import me.rerere.rikkahub.data.model.SubAgentStepType
 import me.rerere.rikkahub.data.model.SubAgentTraceStep
+import me.rerere.rikkahub.data.model.SubAgentTraceTurn
+import me.rerere.rikkahub.data.model.SubAgentTurnStatus
 
 private const val SUB_AGENT_MAX_STEPS = 24
 private const val MAX_DISCUSSION_ROUNDS = 5
@@ -20,6 +22,9 @@ private const val MAX_DISCUSSION_ROUNDS = 5
 // 过程记录里单个字段保留的最大字符数，以及单次发言的总预算，避免元数据膨胀
 private const val STEP_TEXT_LIMIT = 2_000
 private const val TRACE_CHAR_BUDGET = 12_000
+
+// 实时过程的刷新间隔：太密会每来一个 token 就重算整份过程，太疏则不够"逐字"
+private const val LIVE_PUBLISH_INTERVAL_MS = 120L
 
 /** 子智能体之间不允许互相派发，避免无限递归。 */
 private val SUB_AGENT_EXCLUDED_TOOLS = setOf("dispatch_subagents", "discuss_subagents")
@@ -30,6 +35,9 @@ private val SUB_AGENT_EXCLUDED_TOOLS = setOf("dispatch_subagents", "discuss_suba
  * 复用 [GenerationLoop] 完成一次独立的多步生成（含工具调用），
  * 从而让子智能体既拥有自己的系统提示词与工具白名单，又不必重复实现生成循环。
  * 每个子智能体可以使用 [SubAgent.modelId] 指定的模型；为空时跟随主智能体模型。
+ *
+ * 为了让界面能逐字看到过程，子智能体默认开启流式输出，并在每次增量时通过
+ * [onTurnUpdate] 回调把当前发言状态推给调用方（由工具转发到 [SubAgentLiveStore]）。
  */
 class SubAgentRunner(
     private val generationLoop: GenerationLoop,
@@ -49,6 +57,18 @@ class SubAgentRunner(
         val steps: List<SubAgentTraceStep> = emptyList(),
     ) {
         val isSuccess: Boolean get() = error == null
+
+        fun toTraceTurn(): SubAgentTraceTurn = SubAgentTraceTurn(
+            agent = agentName,
+            round = round,
+            model = model,
+            readOnly = readOnly,
+            status = if (isSuccess) SubAgentTurnStatus.OK else SubAgentTurnStatus.ERROR,
+            task = task,
+            steps = steps,
+            output = output,
+            error = error,
+        )
     }
 
     /** 让单个子智能体完成一个任务。 */
@@ -59,6 +79,7 @@ class SubAgentRunner(
         agent: SubAgent,
         task: String,
         availableTools: List<Tool>,
+        onTurnUpdate: ((SubAgentTraceTurn) -> Unit)? = null,
     ): Turn = runTurn(
         settings = settings,
         callerAssistant = callerAssistant,
@@ -68,11 +89,14 @@ class SubAgentRunner(
         round = 0,
         task = task.trim(),
         availableTools = availableTools,
+        onTurnUpdate = onTurnUpdate,
     )
 
     /**
      * 组织多个子智能体围绕一个主题进行多轮讨论，
      * 每个子智能体都能看到此前所有发言，从而形成"智能体探讨"。
+     *
+     * [onTurnUpdate] 的第二个参数是该发言在整场讨论中的序号，用于实时过程的有序拼接。
      */
     suspend fun discuss(
         settings: Settings,
@@ -82,12 +106,14 @@ class SubAgentRunner(
         topic: String,
         rounds: Int,
         availableTools: List<Tool>,
+        onTurnUpdate: ((Int, SubAgentTraceTurn) -> Unit)? = null,
     ): List<Turn> {
         val result = mutableListOf<Turn>()
         val maxRounds = rounds.coerceIn(1, MAX_DISCUSSION_ROUNDS)
         repeat(maxRounds) { roundIndex ->
             agents.forEach { agent ->
                 val prompt = buildDiscussionPrompt(topic, agent, result)
+                val turnIndex = result.size
                 result += runTurn(
                     settings = settings,
                     callerAssistant = callerAssistant,
@@ -97,6 +123,7 @@ class SubAgentRunner(
                     round = roundIndex + 1,
                     task = "",
                     availableTools = availableTools,
+                    onTurnUpdate = { turn -> onTurnUpdate?.invoke(turnIndex, turn) },
                 )
             }
         }
@@ -112,6 +139,7 @@ class SubAgentRunner(
         round: Int,
         task: String,
         availableTools: List<Tool>,
+        onTurnUpdate: ((SubAgentTraceTurn) -> Unit)?,
     ): Turn {
         // 子智能体指定了模型就用它，否则跟随主智能体当前使用的模型
         val agentModel = settings.findModelById(agent.modelId) ?: callerModel
@@ -129,11 +157,34 @@ class SubAgentRunner(
             temperature = callerAssistant.temperature,
             topP = callerAssistant.topP,
             maxTokens = callerAssistant.maxTokens,
-            streamOutput = false,
+            // 开启流式，界面才能逐字看到子智能体的思考与工具调用过程
+            streamOutput = true,
             reasoningLevel = ReasoningLevel.AUTO,
             localTools = emptyList(),
         )
+
+        // 用当前状态拼出一份"发言快照"，实时推给界面
+        fun snapshot(
+            status: String,
+            output: String,
+            error: String?,
+            steps: List<SubAgentTraceStep>,
+        ) = SubAgentTraceTurn(
+            agent = agent.name,
+            round = round,
+            model = agentModel.displayName,
+            readOnly = agent.readOnly,
+            status = status,
+            task = task,
+            steps = steps,
+            output = output,
+            error = error,
+        )
+
+        onTurnUpdate?.invoke(snapshot(SubAgentTurnStatus.RUNNING, "", null, emptyList()))
+
         var history: List<UIMessage> = emptyList()
+        var lastPublishAt = 0L
         return try {
             generationLoop.generateText(
                 settings = settings,
@@ -145,9 +196,21 @@ class SubAgentRunner(
             ).collect { chunk ->
                 if (chunk is GenerationChunk.Messages) {
                     history = chunk.messages
+                    val now = System.currentTimeMillis()
+                    if (now - lastPublishAt >= LIVE_PUBLISH_INTERVAL_MS) {
+                        lastPublishAt = now
+                        onTurnUpdate?.invoke(
+                            snapshot(
+                                status = SubAgentTurnStatus.RUNNING,
+                                output = history.lastOrNull()?.toText()?.trim().orEmpty(),
+                                error = null,
+                                steps = buildSteps(history),
+                            )
+                        )
+                    }
                 }
             }
-            Turn(
+            val turn = Turn(
                 agentName = agent.name,
                 round = round,
                 output = history.lastOrNull()?.toText()?.trim().orEmpty().ifBlank { "(无输出)" },
@@ -156,10 +219,12 @@ class SubAgentRunner(
                 task = task,
                 steps = buildSteps(history),
             )
+            onTurnUpdate?.invoke(turn.toTraceTurn())
+            turn
         } catch (e: CancellationException) {
             throw e
         } catch (e: Throwable) {
-            Turn(
+            val turn = Turn(
                 agentName = agent.name,
                 round = round,
                 output = "",
@@ -169,6 +234,8 @@ class SubAgentRunner(
                 task = task,
                 steps = buildSteps(history),
             )
+            onTurnUpdate?.invoke(turn.toTraceTurn())
+            turn
         }
     }
 

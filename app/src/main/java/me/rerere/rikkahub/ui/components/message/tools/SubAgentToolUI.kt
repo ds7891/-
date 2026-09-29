@@ -17,6 +17,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -27,6 +29,7 @@ import me.rerere.ai.ui.UIMessagePart
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.AiBrain01
 import me.rerere.rikkahub.R
+import me.rerere.rikkahub.data.ai.SubAgentLiveStore
 import me.rerere.rikkahub.data.ai.tools.DISCUSS_SUB_AGENTS_TOOL
 import me.rerere.rikkahub.data.ai.tools.DISPATCH_SUB_AGENTS_TOOL
 import me.rerere.rikkahub.data.model.SubAgentStepType
@@ -35,6 +38,7 @@ import me.rerere.rikkahub.data.model.SubAgentTraceTurn
 import me.rerere.rikkahub.data.model.toSubAgentTrace
 import me.rerere.rikkahub.ui.components.ui.Tag
 import me.rerere.rikkahub.ui.components.ui.TagType
+import org.koin.compose.koinInject
 
 /** 子智能体任务分派的步骤渲染器：展开后展示每个子智能体的推理、工具调用与输出。 */
 object SubAgentDispatchToolUI : ToolUIRenderer {
@@ -46,7 +50,9 @@ object SubAgentDispatchToolUI : ToolUIRenderer {
     override fun title(context: ToolUIContext): String =
         stringResource(R.string.chat_message_sub_agent_dispatch)
 
-    override fun hasSummary(context: ToolUIContext): Boolean = context.tool.isExecuted
+    // 运行中也展示，才能在生成过程中逐字看到子智能体的推理与工具调用
+    override fun hasSummary(context: ToolUIContext): Boolean =
+        context.tool.isExecuted || context.loading
 
     @Composable
     override fun Summary(context: ToolUIContext) {
@@ -69,7 +75,9 @@ object SubAgentDiscussToolUI : ToolUIRenderer {
     override fun title(context: ToolUIContext): String =
         stringResource(R.string.chat_message_sub_agent_discuss)
 
-    override fun hasSummary(context: ToolUIContext): Boolean = context.tool.isExecuted
+    // 运行中也展示，才能在生成过程中逐字看到各子智能体的发言
+    override fun hasSummary(context: ToolUIContext): Boolean =
+        context.tool.isExecuted || context.loading
 
     @Composable
     override fun Summary(context: ToolUIContext) {
@@ -82,14 +90,23 @@ object SubAgentDiscussToolUI : ToolUIRenderer {
     }
 }
 
-/** 从工具输出部件的 metadata 中读出过程记录，渲染成"多智能体对话"视图。 */
+/**
+ * 渲染"多智能体对话"视图。
+ *
+ * 生成过程中读取 [SubAgentLiveStore] 里的实时过程，随每次快照逐字刷新；
+ * 工具执行结束后消息 metadata 里已有完整记录，则以它为准。
+ */
 @Composable
 private fun SubAgentTraceContent(context: ToolUIContext, scrollable: Boolean = false) {
-    val trace = context.tool.output
+    val persisted = context.tool.output
         .filterIsInstance<UIMessagePart.Text>()
         .firstOrNull()
         ?.metadata
         .toSubAgentTrace()
+
+    val liveStore: SubAgentLiveStore = koinInject()
+    val liveTraces by liveStore.traces.collectAsState()
+    val trace = persisted ?: liveTraces[context.tool.toolCallId]
 
     val modifier = if (scrollable) {
         Modifier
@@ -104,24 +121,28 @@ private fun SubAgentTraceContent(context: ToolUIContext, scrollable: Boolean = f
         modifier = modifier,
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        if (trace == null || trace.turns.isEmpty()) {
-            Text(
+        when {
+            trace != null && trace.turns.isNotEmpty() -> {
+                val heading = trace.topic.ifBlank { trace.title }
+                if (heading.isNotBlank()) {
+                    Text(
+                        text = heading,
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
+
+                trace.turns.forEach { turn ->
+                    SubAgentTurnCard(turn)
+                }
+            }
+            // 子任务刚启动、尚未产出过程时不显示空占位，避免闪一下
+            context.loading -> Unit
+            else -> Text(
                 text = stringResource(R.string.chat_message_sub_agent_empty),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-        } else {
-            if (trace.topic.isNotBlank()) {
-                Text(
-                    text = trace.topic,
-                    style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.primary,
-                )
-            }
-
-            trace.turns.forEach { turn ->
-                SubAgentTurnCard(turn)
-            }
         }
     }
 }
