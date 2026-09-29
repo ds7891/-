@@ -132,7 +132,7 @@ fun SettingAboutPage() {
                         )
 
                         Text(
-                            text = "RikkaHub",
+                            text = "清水",
                             style = MaterialTheme.typography.displaySmall,
                         )
                     }

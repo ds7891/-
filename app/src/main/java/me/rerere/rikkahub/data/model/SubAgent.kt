@@ -37,28 +37,31 @@ val READ_ONLY_BLOCKED_TOOLS: Set<String> = setOf(
 
 /**
  * 内置子智能体，参考 OpenMinis 的子智能体设计。
- * 这些名字与工具名对应 RikkaHub 实际注册的工具名。
+ * 这些名字与工具名对应 清水 实际注册的工具名。
+ *
+ * 权限约定：只有「审查」类（审查员）默认 [SubAgent.readOnly] = true，只能读文件、不能改；
+ * 其余（探索者/编码员/设计师/研究员）默认可写，能否写取决于各自的工具白名单。
  */
 internal val DEFAULT_SUB_AGENTS = listOf(
     SubAgent(
         id = Uuid.parse("0e0a4f7c-1f0b-4c2a-9a5e-000000000001"),
         name = "探索者",
-        description = "只读侦察：读文件、查历史、联网搜索，先定位再汇报",
-        systemPrompt = "你是探索者，负责只读侦察。先定位相关文件、代码或信息，再给出简明结论。" +
-            "不要修改任何文件，不要执行会改变状态的命令。",
+        description = "侦察定位：读文件、查历史、联网搜索，先定位再汇报",
+        systemPrompt = "你是探索者，负责侦察与定位。先找到相关文件、代码或信息，再给出简明结论和位置。",
         toolNames = listOf(
             "workspace_read_file", "recent_chats", "conversation_search",
             "search_web", "scrape_web", "get_time_info",
         ),
-        readOnly = true,
+        readOnly = false,
         builtin = true,
     ),
     SubAgent(
         id = Uuid.parse("0e0a4f7c-1f0b-4c2a-9a5e-000000000002"),
         name = "审查员",
-        description = "代码审查：找缺陷、风险与测试缺口，给出可执行建议",
-        systemPrompt = "你是审查员，负责代码审查。找出缺陷、风险、边界问题和测试缺口，" +
-            "给出具体、可执行的修改建议，但不要自己动手改代码。",
+        description = "只审查不修改：找缺陷、风险与测试缺口，反馈给编码类执行",
+        systemPrompt = "你是审查员，只负责审查，不负责修改。找出缺陷、风险、边界问题和测试缺口，" +
+            "给出具体、可执行的修改建议，并把结论反馈给主智能体或编码类子智能体去落实。" +
+            "你自己绝不写文件、绝不改文件，只读文件。",
         toolNames = listOf(
             "workspace_read_file",
             "search_web", "scrape_web", "recent_chats",
@@ -69,12 +72,26 @@ internal val DEFAULT_SUB_AGENTS = listOf(
     SubAgent(
         id = Uuid.parse("0e0a4f7c-1f0b-4c2a-9a5e-000000000003"),
         name = "编码员",
-        description = "实现改动：读写文件、执行命令并自检",
+        description = "实现改动：读写代码、执行命令并自检",
         systemPrompt = "你是编码员，负责实现改动。按任务修改代码并运行验证，" +
             "只改动任务范围内的文件，完成后用搜索或测试自检。",
         toolNames = listOf(
             "workspace_read_file", "workspace_write_file", "workspace_edit_file",
             "workspace_shell", "search_web",
+        ),
+        readOnly = false,
+        builtin = true,
+    ),
+    SubAgent(
+        id = Uuid.parse("0e0a4f7c-1f0b-4c2a-9a5e-000000000005"),
+        name = "设计师",
+        description = "界面与视觉：出稿、改样式、直接写入对应的前端/样式文件",
+        systemPrompt = "你是设计师，负责界面与视觉方案。产出具体的界面结构、样式与文案，" +
+            "并直接写入对应的文件（如 UI、样式、设计文档）。" +
+            "关注信息层级，并同时考虑加载中、空数据、出错三种状态。",
+        toolNames = listOf(
+            "workspace_read_file", "workspace_write_file", "workspace_edit_file",
+            "search_web", "scrape_web",
         ),
         readOnly = false,
         builtin = true,
@@ -88,7 +105,7 @@ internal val DEFAULT_SUB_AGENTS = listOf(
         toolNames = listOf(
             "search_web", "scrape_web", "workspace_read_file",
         ),
-        readOnly = true,
+        readOnly = false,
         builtin = true,
     ),
 )

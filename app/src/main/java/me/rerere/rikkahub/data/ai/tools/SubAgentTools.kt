@@ -60,6 +60,7 @@ private fun buildDispatchTool(
     description = """
         把一个或多个任务分派给专职子智能体，并等待它们完成后返回结果。
         当任务需要独立的检索、审查、实现或调研，或需要并行处理多个子任务时，优先使用本工具。
+        审查类子智能体是只读的，只给出问题与建议；请把它返回的结论再分派给编码/设计类子智能体去落实修改。
         可用的子智能体：
         ${agentCatalog(agents)}
     """.trimIndent(),
@@ -69,6 +70,7 @@ private fun buildDispatchTool(
             appendLine("你可以使用 `$DISPATCH_SUB_AGENTS_TOOL` 把任务分派给下列专职子智能体，它们会独立完成并汇报结果：")
             appendLine(agentCatalog(agents))
             appendLine("当任务需要独立检索、审查、实现或调研时，优先委派给合适的子智能体。")
+            appendLine("审查类子智能体只读、不会改文件，只反馈问题与建议；拿到它的结论后，请再把需要落地的修改分派给编码/设计类子智能体。")
             appendLine("你也可以使用 `$DISCUSS_SUB_AGENTS_TOOL` 组织多个子智能体围绕一个主题展开讨论。")
         }
     },
@@ -204,7 +206,10 @@ private fun buildDiscussTool(
 )
 
 private fun agentCatalog(agents: List<SubAgent>): String =
-    agents.joinToString("\n") { "- ${it.name}：${it.description.ifBlank { "（无描述）" }}" }
+    agents.joinToString("\n") { agent ->
+        val suffix = if (agent.readOnly) "（只读：只审查、不改文件）" else ""
+        "- ${agent.name}：${agent.description.ifBlank { "（无描述）" }}$suffix"
+    }
 
 private fun findAgent(agents: List<SubAgent>, name: String): SubAgent? =
     agents.firstOrNull { it.name.equals(name.trim(), ignoreCase = true) }

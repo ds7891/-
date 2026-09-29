@@ -7,7 +7,7 @@
   <string name="about_page_version">Version</string>
   <string name="about_page_website">Website</string>
   <string name="add">Add</string>
-  <string name="app_name">RikkaHub</string>
+  <string name="app_name">清水</string>
   <string name="asr_button_content_description">Speech Recognition</string>
   <string name="asr_button_stop">Stop</string>
   <string name="assistant_detail_basic_desc">Configure name, avatar, model, and parameters</string>
@@ -889,7 +889,7 @@
   <string name="setting_page_search_title">Search Service</string>
   <string name="setting_page_share">Share</string>
   <string name="setting_page_share_desc">Share this app with friends</string>
-  <string name="setting_page_share_text">RikkaHub - Open Source Android AI Assistant\n\nWebsite: https://rikka-ai.com/</string>
+  <string name="setting_page_share_text">清水 - Open Source Android AI Assistant\n\nWebsite: https://rikka-ai.com/</string>
   <string name="setting_page_sponsor_alert_confirm">Donate</string>
   <string name="setting_page_sponsor_alert_desc">You have launched the app over 100 times! If you enjoy using it, please consider supporting the developer.</string>
   <string name="setting_page_sponsor_alert_dismiss">Not Now</string>
@@ -911,8 +911,8 @@
   <string name="setting_sub_agent_page_enable_desc">Allow the main agent to dispatch tasks to sub-agents and let sub-agents discuss with each other</string>
   <string name="setting_sub_agent_page_name">Name</string>
   <string name="setting_sub_agent_page_name_desc">The main agent finds and calls this sub-agent by its name</string>
-  <string name="setting_sub_agent_page_read_only">Read-only mode</string>
-  <string name="setting_sub_agent_page_read_only_desc">Block every tool that changes state, so this sub-agent can only read and search</string>
+  <string name="setting_sub_agent_page_read_only">Read-only (no file changes)</string>
+  <string name="setting_sub_agent_page_read_only_desc">Only review sub-agents need this: they can read but never write or edit files. Leave it off for coding, design and other sub-agents so they can edit files.</string>
   <string name="setting_sub_agent_page_read_only_tag">Read-only</string>
   <string name="setting_sub_agent_page_restore_presets">Restore preset sub-agents</string>
   <string name="setting_sub_agent_page_restore_presets_desc">Add back the built-in preset sub-agents that were deleted</string>
@@ -946,7 +946,7 @@
   <string name="setting_page_web_server">Web Server</string>
   <string name="setting_page_web_server_address_note">Address Notes</string>
   <string name="setting_page_web_server_address_note_desc">LAN Address: Uses device WiFi IP, accessible to other devices on the same network. Unavailable on mobile data.\nLocal Address: Uses localhost, accessible on this device only.\nmDNS Address: Uses .local hostname, accessible by name from other devices on the same network without knowing the IP.</string>
-  <string name="setting_page_web_server_desc">Allow you access RikkaHub via Web</string>
+  <string name="setting_page_web_server_desc">Allow you access 清水 via Web</string>
   <string name="setting_page_web_server_error">Error</string>
   <string name="setting_page_web_server_jwt_enable">Enable authentication</string>
   <string name="setting_page_web_server_jwt_enable_desc">Require password verification when accessing the web interface</string>

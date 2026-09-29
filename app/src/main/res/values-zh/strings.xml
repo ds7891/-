@@ -7,7 +7,7 @@
   <string name="about_page_version">版本</string>
   <string name="about_page_website">官网</string>
   <string name="add">添加</string>
-  <string name="app_name">RikkaHub</string>
+  <string name="app_name">清水</string>
   <string name="asr_button_content_description">语音识别</string>
   <string name="asr_button_stop">停止</string>
   <string name="assistant_detail_basic_desc">配置名称、头像、模型和参数</string>
@@ -860,7 +860,7 @@
   <string name="setting_page_search_title">搜索服务</string>
   <string name="setting_page_share">分享</string>
   <string name="setting_page_share_desc">分享本APP给朋友</string>
-  <string name="setting_page_share_text">RikkaHub - 开源安卓AI助手\n\n官网: https://rikka-ai.com/</string>
+  <string name="setting_page_share_text">清水 - 开源安卓AI助手\n\n官网: https://rikka-ai.com/</string>
   <string name="setting_page_sponsor_alert_confirm">捐赠</string>
   <string name="setting_page_sponsor_alert_desc">您已启动应用超过100次！如果您喜欢使用它，请考虑支持开发者。</string>
   <string name="setting_page_sponsor_alert_dismiss">暂不</string>
@@ -882,8 +882,8 @@
   <string name="setting_sub_agent_page_enable_desc">允许主智能体把任务分派给子智能体，并组织子智能体互相讨论</string>
   <string name="setting_sub_agent_page_name">名称</string>
   <string name="setting_sub_agent_page_name_desc">主智能体通过该名称找到并调用此子智能体</string>
-  <string name="setting_sub_agent_page_read_only">只读模式</string>
-  <string name="setting_sub_agent_page_read_only_desc">屏蔽一切会改变状态的工具，该子智能体只能读取与检索</string>
+  <string name="setting_sub_agent_page_read_only">只读（禁止改文件）</string>
+  <string name="setting_sub_agent_page_read_only_desc">仅审查类需要开启：只能读文件、不能写或改；编码、设计等子智能体保持关闭即可读写文件</string>
   <string name="setting_sub_agent_page_read_only_tag">只读</string>
   <string name="setting_sub_agent_page_restore_presets">恢复预设子智能体</string>
   <string name="setting_sub_agent_page_restore_presets_desc">把被删除的内置预设子智能体补回来</string>
@@ -916,7 +916,7 @@
   <string name="setting_page_web_server_address_note_desc">局域网地址：使用设备 WiFi IP，同一网络中的其他设备可访问。移动数据网络下不可用。
 本地地址：使用 localhost，仅限本设备访问。
 mDNS 地址：使用 .local 主机名，同一网络中的其他设备可通过名称访问，无需知道 IP。</string>
-  <string name="setting_page_web_server_desc">允许你通过网页访问 RikkaHub</string>
+  <string name="setting_page_web_server_desc">允许你通过网页访问 清水</string>
   <string name="setting_page_web_server_error">错误</string>
   <string name="setting_page_web_server_jwt_enable">启用身份验证</string>
   <string name="setting_page_web_server_jwt_enable_desc">访问网页界面时需要密码验证</string>

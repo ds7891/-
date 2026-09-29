@@ -63,7 +63,7 @@ class NsdServiceRegistrar(
                 serviceType,
                 serviceName,
                 port,
-                "RikkaHub Web Server"
+                "清水 Web Server"
             )
             mdns.registerService(serviceInfo)
 
