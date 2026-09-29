@@ -11,6 +11,9 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          # material3 模块把 material-color-utilities 子模块的源码目录当作源码，必须递归拉取
+          submodules: recursive
 
       - name: Set up JDK 21
         uses: actions/setup-java@v4
@@ -21,7 +24,25 @@ jobs:
       - name: Set up Gradle 9.6.0
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: 9.6.0
+          gradle-version: '9.6.0'
+
+      # web 模块的 preBuild 会执行 `pnpm run build`（在 web-ui 目录），必须先装好 Node + pnpm
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web-ui/pnpm-lock.yaml
+
+      # buildWebUi 任务只跑 build 不跑 install，需要提前安装依赖
+      - name: Install web-ui dependencies
+        working-directory: web-ui
+        run: pnpm install --frozen-lockfile
 
       - name: Build Debug APK
         run: gradle assembleDebug --stacktrace
@@ -29,6 +50,6 @@ jobs:
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: mcp-injector-debug-apk
+          name: qingshui-debug-apk
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
