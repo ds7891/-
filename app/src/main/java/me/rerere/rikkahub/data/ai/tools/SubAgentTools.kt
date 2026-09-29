@@ -18,6 +18,10 @@ import me.rerere.rikkahub.data.ai.SubAgentRunner
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.SubAgent
+import me.rerere.rikkahub.data.model.SubAgentTrace
+import me.rerere.rikkahub.data.model.SubAgentTraceTurn
+import me.rerere.rikkahub.data.model.SubAgentTurnStatus
+import me.rerere.rikkahub.data.model.toMetadata
 
 const val DISPATCH_SUB_AGENTS_TOOL = "dispatch_subagents"
 const val DISCUSS_SUB_AGENTS_TOOL = "discuss_subagents"
@@ -108,8 +112,10 @@ private fun buildDispatchTool(
     },
     execute = { args ->
         val root = args.jsonObject
+        val toolTitle = root["tool_title"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
         val assignments = root["assignments"]?.jsonArray ?: JsonArray(emptyList())
         val outputs = mutableListOf<String>()
+        val turns = mutableListOf<SubAgentRunner.Turn>()
         assignments.forEach { element ->
             val obj = element.jsonObject
             val agentName = obj["agent"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
@@ -118,15 +124,18 @@ private fun buildDispatchTool(
             when {
                 agent == null -> outputs += "### $agentName\n[错误] 未找到该子智能体。可用子智能体：${agents.joinToString("、") { it.name }}"
                 task.isBlank() -> outputs += "### ${agent.name}\n[错误] 任务描述为空。"
-                else -> outputs += formatTurn(
-                    runner.runTask(settings, callerAssistant, callerModel, agent, task, baseTools)
-                )
+                else -> {
+                    val turn = runner.runTask(settings, callerAssistant, callerModel, agent, task, baseTools)
+                    turns += turn
+                    outputs += formatTurn(turn)
+                }
             }
         }
         if (outputs.isEmpty()) {
             outputs += "[错误] 未提供任何任务。"
         }
-        listOf(UIMessagePart.Text(outputs.joinToString("\n\n")))
+        val trace = SubAgentTrace(title = toolTitle, turns = turns.map { it.toTraceTurn() })
+        listOf(UIMessagePart.Text(outputs.joinToString("\n\n"), metadata = trace.toMetadata()))
     },
 )
 
@@ -178,11 +187,12 @@ private fun buildDiscussTool(
             .take(MAX_DISCUSSION_AGENTS)
         val rounds = root["rounds"]?.jsonPrimitive?.intOrNull ?: 2
 
+        var turns: List<SubAgentRunner.Turn> = emptyList()
         val text = when {
             topic.isBlank() -> "[错误] 讨论主题不能为空。"
             participants.size < 2 -> "[错误] 至少需要两个有效的子智能体才能进行讨论。可用子智能体：${agents.joinToString("、") { it.name }}"
             else -> {
-                val turns = runner.discuss(
+                turns = runner.discuss(
                     settings = settings,
                     callerAssistant = callerAssistant,
                     callerModel = callerModel,
@@ -201,7 +211,8 @@ private fun buildDiscussTool(
                 }.trim()
             }
         }
-        listOf(UIMessagePart.Text(text))
+        val trace = SubAgentTrace(topic = topic, turns = turns.map { it.toTraceTurn() })
+        listOf(UIMessagePart.Text(text, metadata = trace.toMetadata()))
     },
 )
 
@@ -228,3 +239,16 @@ private fun formatTurn(turn: SubAgentRunner.Turn): String = buildString {
         append(turn.output)
     }
 }
+
+/** 把一次发言转成可持久化的过程记录，供界面还原多智能体对话视图。 */
+private fun SubAgentRunner.Turn.toTraceTurn(): SubAgentTraceTurn = SubAgentTraceTurn(
+    agent = agentName,
+    round = round,
+    model = model,
+    readOnly = readOnly,
+    status = if (isSuccess) SubAgentTurnStatus.OK else SubAgentTurnStatus.ERROR,
+    task = task,
+    steps = steps,
+    output = output,
+    error = error,
+)

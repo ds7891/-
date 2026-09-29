@@ -562,7 +562,9 @@ class GenerationLoop(
                     appendLine("Use shell to search: `grep \"pattern\" /tool_outputs/$fileName`")
                     appendLine()
                     append(preview)
-                }
+                },
+                // 保留元数据（如子智能体过程记录），避免截断后界面丢失结构化信息
+                metadata = textParts.firstOrNull()?.metadata,
             )
         ) + nonTextParts
     }

@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -39,20 +40,29 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlin.uuid.Uuid
+import me.rerere.ai.provider.ModelType
+import me.rerere.ai.provider.ProviderSetting
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.Add01
 import me.rerere.hugeicons.stroke.AiBrain01
+import me.rerere.hugeicons.stroke.ArrowDown01
+import me.rerere.hugeicons.stroke.ArrowUp01
 import me.rerere.hugeicons.stroke.Delete01
 import me.rerere.rikkahub.R
+import me.rerere.rikkahub.data.datastore.findModelById
+import me.rerere.rikkahub.data.datastore.findProvider
 import me.rerere.rikkahub.data.model.DEFAULT_SUB_AGENTS
 import me.rerere.rikkahub.data.model.KNOWN_SUB_AGENT_TOOLS
 import me.rerere.rikkahub.data.model.SubAgent
 import me.rerere.rikkahub.ui.components.nav.BackButton
+import me.rerere.rikkahub.ui.components.ui.AutoAIIcon
 import me.rerere.rikkahub.ui.components.ui.CardGroup
 import me.rerere.rikkahub.ui.components.ui.FormItem
 import me.rerere.rikkahub.ui.components.ui.ItemAction
@@ -211,8 +221,8 @@ fun SettingSubAgentPage(vm: SettingVM = koinViewModel()) {
         }
     }
 
-    SubAgentEditModal(creationState)
-    SubAgentEditModal(editState)
+    SubAgentEditModal(creationState, settings.providers)
+    SubAgentEditModal(editState, settings.providers)
 
     RikkaConfirmDialog(
         show = showRestoreDialog,
@@ -340,7 +350,10 @@ private fun SubAgentItem(
 }
 
 @Composable
-private fun SubAgentEditModal(state: EditState<SubAgent>) {
+private fun SubAgentEditModal(
+    state: EditState<SubAgent>,
+    providers: List<ProviderSetting>,
+) {
     state.EditStateContent { agent, update ->
         ModalBottomSheet(
             onDismissRequest = { state.dismiss() },
@@ -390,6 +403,19 @@ private fun SubAgentEditModal(state: EditState<SubAgent>) {
                         supportingText = { Text(stringResource(R.string.setting_sub_agent_page_description_desc)) },
                         modifier = Modifier.fillMaxWidth(),
                     )
+
+                    HorizontalDivider()
+
+                    FormItem(
+                        label = { Text(stringResource(R.string.setting_sub_agent_page_model)) },
+                        description = { Text(stringResource(R.string.setting_sub_agent_page_model_desc)) },
+                    ) {
+                        SubAgentModelSection(
+                            modelId = agent.modelId,
+                            providers = providers,
+                            onSelect = { update(agent.copy(modelId = it)) },
+                        )
+                    }
 
                     HorizontalDivider()
 
@@ -491,6 +517,164 @@ private fun SubAgentEditModal(state: EditState<SubAgent>) {
                     ) {
                         Text(stringResource(R.string.setting_mcp_page_save))
                     }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 子智能体的模型选择器：默认为「跟随主模型」，展开后按供应商分组列出已添加的对话模型。
+ */
+@Composable
+private fun SubAgentModelSection(
+    modelId: Uuid?,
+    providers: List<ProviderSetting>,
+    onSelect: (Uuid?) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val currentModel = modelId?.let { providers.findModelById(it) }
+    val providerGroups = remember(providers) {
+        providers.filter { it.enabled }.mapNotNull { provider ->
+            val models = provider.models.filter { it.type == ModelType.CHAT }
+            if (models.isEmpty()) null else provider to models
+        }
+    }
+
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Card(
+            onClick = { expanded = !expanded },
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(
+                containerColor = CustomColors.listItemColors.containerColor
+            ),
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(12.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                AutoAIIcon(
+                    name = currentModel?.modelId ?: "auto",
+                    modifier = Modifier.size(28.dp),
+                    color = Color.Transparent,
+                )
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                ) {
+                    Text(
+                        text = currentModel?.displayName
+                            ?: stringResource(R.string.setting_sub_agent_page_model_follow),
+                        style = MaterialTheme.typography.bodyMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        text = currentModel?.findProvider(providers)?.name
+                            ?: stringResource(R.string.setting_sub_agent_page_model_follow_hint),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                Icon(
+                    imageVector = if (expanded) HugeIcons.ArrowUp01 else HugeIcons.ArrowDown01,
+                    contentDescription = null,
+                )
+            }
+        }
+
+        if (expanded) {
+            ModelOptionRow(
+                selected = modelId == null,
+                title = stringResource(R.string.setting_sub_agent_page_model_follow),
+                subtitle = stringResource(R.string.setting_sub_agent_page_model_follow_hint),
+                onClick = { onSelect(null) },
+            )
+            if (providerGroups.isEmpty()) {
+                Text(
+                    text = stringResource(R.string.model_list_no_providers),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 4.dp),
+                )
+            }
+            providerGroups.forEach { (provider, models) ->
+                Text(
+                    text = provider.name,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(start = 4.dp, top = 4.dp),
+                )
+                models.forEach { model ->
+                    ModelOptionRow(
+                        selected = model.id == modelId,
+                        title = model.displayName,
+                        subtitle = null,
+                        iconName = model.modelId,
+                        onClick = { onSelect(model.id) },
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ModelOptionRow(
+    selected: Boolean,
+    title: String,
+    subtitle: String?,
+    onClick: () -> Unit,
+    iconName: String? = null,
+) {
+    Card(
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = if (selected) {
+                MaterialTheme.colorScheme.primaryContainer
+            } else {
+                CustomColors.listItemColors.containerColor
+            },
+        ),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (iconName != null) {
+                AutoAIIcon(
+                    name = iconName,
+                    modifier = Modifier.size(24.dp),
+                    color = Color.Transparent,
+                )
+            }
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.bodyMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (subtitle != null) {
+                    Text(
+                        text = subtitle,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
                 }
             }
         }

@@ -16,6 +16,8 @@ data class SubAgent(
     val description: String = "",
     val systemPrompt: String = "",
     val enabled: Boolean = true,
+    // 该子智能体使用的模型；为 null 表示跟随主智能体当前使用的模型
+    val modelId: Uuid? = null,
     // 工具白名单；为空表示该子智能体可使用主智能体当前可用的全部工具
     val toolNames: List<String> = emptyList(),
     // 只读模式：在工具白名单基础上再屏蔽一切会改变状态的工具（对应 OpenMinis 的 explore/plan kind）
