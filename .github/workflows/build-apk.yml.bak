@@ -18,7 +18,7 @@ jobs:
           java-version: '21'
           distribution: 'temurin'
 
-      - name: Set up Gradle 9.6.0
+      - name: Set up Gradle 9.0.0
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: 9.6.0
