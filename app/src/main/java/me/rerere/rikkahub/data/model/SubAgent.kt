@@ -39,6 +39,18 @@ val READ_ONLY_BLOCKED_TOOLS: Set<String> = setOf(
 )
 
 /**
+ * 申请权限时被判为"高权限"、需要转交用户确认的工具（写入 / 执行 / 状态变更类）。
+ *
+ * 不在本集合、且其 [me.rerere.ai.core.Tool.needsApproval] 为 false 的工具，
+ * 由主智能体自动裁定即可；本集合内（以及任何自定义了审批的工具，如 MCP 写操作）则必须经用户确认。
+ */
+val HIGH_PRIVILEGE_TOOLS: Set<String> = READ_ONLY_BLOCKED_TOOLS + setOf(
+    "clipboard_tool",
+    "eval_javascript",
+    "use_skill",
+)
+
+/**
  * 内置子智能体，参考 OpenMinis 的子智能体设计。
  * 这些名字与工具名对应 清水 实际注册的工具名。
  *

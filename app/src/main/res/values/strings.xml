@@ -926,6 +926,15 @@
   <string name="chat_message_sub_agent_read_only">Read-only</string>
   <string name="chat_message_sub_agent_failed">Failed</string>
   <string name="chat_message_sub_agent_empty">No sub-agent activity</string>
+  <string name="chat_message_sub_agent_group">Group discussion</string>
+  <string name="chat_message_sub_agent_capability">Capability requests</string>
+  <string name="chat_message_sub_agent_group_progress">Progress</string>
+  <string name="chat_message_sub_agent_group_question">Question</string>
+  <string name="chat_message_sub_agent_group_answer">Answer</string>
+  <string name="chat_message_sub_agent_group_decision">Decision</string>
+  <string name="chat_message_sub_agent_capability_result">Approved: %1$s · Denied: %2$s · Decided by %3$s</string>
+  <string name="chat_message_sub_agent_capability_reason">Reason: %1$s</string>
+  <string name="chat_message_sub_agent_capability_none">none</string>
   <string name="setting_sub_agent_page_read_only">Read-only (no file changes)</string>
   <string name="setting_sub_agent_page_read_only_desc">Only review sub-agents need this: they can read but never write or edit files. Leave it off for coding, design and other sub-agents so they can edit files.</string>
   <string name="setting_sub_agent_page_read_only_tag">Read-only</string>

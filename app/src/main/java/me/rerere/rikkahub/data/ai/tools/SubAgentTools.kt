@@ -15,6 +15,7 @@ import me.rerere.ai.core.InputSchema
 import me.rerere.ai.core.Tool
 import me.rerere.ai.provider.Model
 import me.rerere.ai.ui.UIMessagePart
+import me.rerere.rikkahub.data.ai.SubAgentGroupChat
 import me.rerere.rikkahub.data.ai.SubAgentLiveStore
 import me.rerere.rikkahub.data.ai.SubAgentRunner
 import me.rerere.rikkahub.data.ai.ToolCallContext
@@ -28,6 +29,14 @@ import me.rerere.rikkahub.data.model.toMetadata
 
 const val DISPATCH_SUB_AGENTS_TOOL = "dispatch_subagents"
 const val DISCUSS_SUB_AGENTS_TOOL = "discuss_subagents"
+
+/** 子智能体运行中可用的协作工具（注入给子智能体，主智能体不直接使用） */
+const val ASK_MAIN_AGENT_TOOL = "ask_main_agent"
+const val ASK_SUB_AGENT_TOOL = "ask_sub_agent"
+const val REQUEST_CAPABILITY_TOOL = "request_capability"
+
+/** 小组讨论开启后，子智能体用它往小组同步进度、问题与建议（注入给子智能体）。 */
+const val GROUP_POST_TOOL = "group_post"
 
 private const val MAX_DISCUSSION_AGENTS = 4
 
@@ -126,6 +135,8 @@ private fun buildDispatchTool(
         if (liveKey != null) {
             liveStore.setHeader(liveKey, title = toolTitle.ifBlank { null })
         }
+        // 本次分派共享的小组会话：主智能体开启讨论后，子智能体之间在此同步进度、互相答疑
+        val group = SubAgentGroupChat(liveKey, liveStore)
         assignments.forEach { element ->
             val obj = element.jsonObject
             val agentName = obj["agent"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
@@ -146,6 +157,7 @@ private fun buildDispatchTool(
                         onTurnUpdate = { updated ->
                             if (liveKey != null) liveStore.upsertTurn(liveKey, liveIndex, updated)
                         },
+                        group = group,
                     )
                     turns += turn
                     outputs += formatTurn(turn)
@@ -155,7 +167,12 @@ private fun buildDispatchTool(
         if (outputs.isEmpty()) {
             outputs += "[错误] 未提供任何任务。"
         }
-        val trace = SubAgentTrace(title = toolTitle, turns = turns.map { it.toTraceTurn() })
+        val trace = SubAgentTrace(
+            title = toolTitle,
+            turns = turns.map { it.toTraceTurn() },
+            groupMessages = group.snapshotMessages(),
+            capabilityRecords = group.snapshotRecords(),
+        )
         listOf(UIMessagePart.Text(outputs.joinToString("\n\n"), metadata = trace.toMetadata()))
     },
 )
@@ -214,6 +231,8 @@ private fun buildDiscussTool(
         if (liveKey != null && topic.isNotBlank()) {
             liveStore.setHeader(liveKey, topic = topic)
         }
+        // 本次探讨共享的小组会话：受主智能体开启后，各子智能体可同步进度、互相答疑
+        val group = SubAgentGroupChat(liveKey, liveStore)
 
         var turns: List<SubAgentRunner.Turn> = emptyList()
         val text = when {
@@ -231,6 +250,7 @@ private fun buildDiscussTool(
                     onTurnUpdate = { index, turn ->
                         if (liveKey != null) liveStore.upsertTurn(liveKey, index, turn)
                     },
+                    group = group,
                 )
                 buildString {
                     appendLine("## 智能体探讨：$topic")
@@ -242,7 +262,12 @@ private fun buildDiscussTool(
                 }.trim()
             }
         }
-        val trace = SubAgentTrace(topic = topic, turns = turns.map { it.toTraceTurn() })
+        val trace = SubAgentTrace(
+            topic = topic,
+            turns = turns.map { it.toTraceTurn() },
+            groupMessages = group.snapshotMessages(),
+            capabilityRecords = group.snapshotRecords(),
+        )
         listOf(UIMessagePart.Text(text, metadata = trace.toMetadata()))
     },
 )

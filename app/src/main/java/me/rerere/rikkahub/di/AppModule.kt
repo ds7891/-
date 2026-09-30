@@ -5,6 +5,7 @@ import com.google.firebase.analytics.analytics
 import com.google.firebase.crashlytics.crashlytics
 import kotlinx.serialization.json.Json
 import me.rerere.rikkahub.AppScope
+import me.rerere.rikkahub.data.ai.CapabilityApprovalStore
 import me.rerere.rikkahub.data.ai.SubAgentLiveStore
 import me.rerere.rikkahub.data.ai.SubAgentRunner
 import me.rerere.rikkahub.data.ai.tools.local.LocalTools
@@ -82,11 +83,17 @@ val appModule = module {
     single {
         SubAgentRunner(
             generationLoop = get(),
+            settingsStore = get(),
+            approvalStore = get(),
         )
     }
 
     single {
         SubAgentLiveStore()
+    }
+
+    single {
+        CapabilityApprovalStore()
     }
 
     single {

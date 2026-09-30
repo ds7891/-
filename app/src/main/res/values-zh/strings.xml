@@ -897,6 +897,15 @@
   <string name="chat_message_sub_agent_read_only">只读</string>
   <string name="chat_message_sub_agent_failed">失败</string>
   <string name="chat_message_sub_agent_empty">暂无子智能体活动</string>
+  <string name="chat_message_sub_agent_group">小组讨论</string>
+  <string name="chat_message_sub_agent_capability">权限申请</string>
+  <string name="chat_message_sub_agent_group_progress">进度</string>
+  <string name="chat_message_sub_agent_group_question">提问</string>
+  <string name="chat_message_sub_agent_group_answer">回答</string>
+  <string name="chat_message_sub_agent_group_decision">决定</string>
+  <string name="chat_message_sub_agent_capability_result">已开通：%1$s · 未开通：%2$s · 由 %3$s 裁定</string>
+  <string name="chat_message_sub_agent_capability_reason">理由：%1$s</string>
+  <string name="chat_message_sub_agent_capability_none">无</string>
   <string name="setting_sub_agent_page_read_only">只读（禁止改文件）</string>
   <string name="setting_sub_agent_page_read_only_desc">仅审查类需要开启：只能读文件、不能写或改；编码、设计等子智能体保持关闭即可读写文件</string>
   <string name="setting_sub_agent_page_read_only_tag">只读</string>

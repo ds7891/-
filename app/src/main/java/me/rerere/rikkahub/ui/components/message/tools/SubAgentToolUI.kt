@@ -23,6 +23,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import me.rerere.ai.ui.UIMessagePart
@@ -32,6 +33,9 @@ import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.ai.SubAgentLiveStore
 import me.rerere.rikkahub.data.ai.tools.DISCUSS_SUB_AGENTS_TOOL
 import me.rerere.rikkahub.data.ai.tools.DISPATCH_SUB_AGENTS_TOOL
+import me.rerere.rikkahub.data.model.CapabilityRecord
+import me.rerere.rikkahub.data.model.GroupMessage
+import me.rerere.rikkahub.data.model.GroupMessageKind
 import me.rerere.rikkahub.data.model.SubAgentStepType
 import me.rerere.rikkahub.data.model.SubAgentTraceStep
 import me.rerere.rikkahub.data.model.SubAgentTraceTurn
@@ -121,8 +125,13 @@ private fun SubAgentTraceContent(context: ToolUIContext, scrollable: Boolean = f
         modifier = modifier,
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
+        val hasContent = trace != null && (
+            trace.turns.isNotEmpty() ||
+                trace.groupMessages.isNotEmpty() ||
+                trace.capabilityRecords.isNotEmpty()
+            )
         when {
-            trace != null && trace.turns.isNotEmpty() -> {
+            hasContent && trace != null -> {
                 val heading = trace.topic.ifBlank { trace.title }
                 if (heading.isNotBlank()) {
                     Text(
@@ -134,6 +143,14 @@ private fun SubAgentTraceContent(context: ToolUIContext, scrollable: Boolean = f
 
                 trace.turns.forEach { turn ->
                     SubAgentTurnCard(turn)
+                }
+
+                if (trace.groupMessages.isNotEmpty()) {
+                    SubAgentGroupSection(trace.groupMessages)
+                }
+
+                if (trace.capabilityRecords.isNotEmpty()) {
+                    SubAgentCapabilitySection(trace.capabilityRecords)
                 }
             }
             // 子任务刚启动、尚未产出过程时不显示空占位，避免闪一下
@@ -223,6 +240,122 @@ private fun SubAgentTurnCard(turn: SubAgentTraceTurn) {
                     text = stringResource(R.string.chat_message_sub_agent_failed) + ": " + turn.error,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.error,
+                )
+            }
+        }
+    }
+}
+
+/** 小组讨论记录：子智能体之间同步的进度、问题与回答。 */
+@Composable
+private fun SubAgentGroupSection(messages: List<GroupMessage>) {
+    HorizontalDivider()
+    Text(
+        text = stringResource(R.string.chat_message_sub_agent_group),
+        style = MaterialTheme.typography.titleSmall,
+        color = MaterialTheme.colorScheme.primary,
+    )
+    messages.forEach { message ->
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceVariant,
+            ),
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(10.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Text(
+                        text = "「" + message.sender + "」",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Tag(type = groupMessageTagType(message.kind)) {
+                        Text(groupMessageLabel(message.kind))
+                    }
+                }
+                Text(
+                    text = message.content,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun groupMessageLabel(kind: String): String = when (kind) {
+    GroupMessageKind.QUESTION -> stringResource(R.string.chat_message_sub_agent_group_question)
+    GroupMessageKind.ANSWER -> stringResource(R.string.chat_message_sub_agent_group_answer)
+    GroupMessageKind.DECISION -> stringResource(R.string.chat_message_sub_agent_group_decision)
+    else -> stringResource(R.string.chat_message_sub_agent_group_progress)
+}
+
+private fun groupMessageTagType(kind: String): TagType = when (kind) {
+    GroupMessageKind.QUESTION -> TagType.WARNING
+    GroupMessageKind.ANSWER -> TagType.SUCCESS
+    GroupMessageKind.DECISION -> TagType.INFO
+    else -> TagType.DEFAULT
+}
+
+/** 工具 / 权限申请记录：谁申请了什么、由谁裁定、结果如何。 */
+@Composable
+private fun SubAgentCapabilitySection(records: List<CapabilityRecord>) {
+    HorizontalDivider()
+    Text(
+        text = stringResource(R.string.chat_message_sub_agent_capability),
+        style = MaterialTheme.typography.titleSmall,
+        color = MaterialTheme.colorScheme.primary,
+    )
+    val none = stringResource(R.string.chat_message_sub_agent_capability_none)
+    records.forEach { record ->
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceVariant,
+            ),
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(10.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Text(
+                    text = "「" + record.agent + "」" + record.tools.joinToString("、"),
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold,
+                )
+                if (record.reason.isNotBlank()) {
+                    Text(
+                        text = stringResource(
+                            R.string.chat_message_sub_agent_capability_reason,
+                            record.reason,
+                        ),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Text(
+                    text = stringResource(
+                        R.string.chat_message_sub_agent_capability_result,
+                        record.approved.joinToString("、").ifBlank { none },
+                        record.denied.joinToString("、").ifBlank { none },
+                        record.decidedBy.ifBlank { none },
+                    ),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface,
                 )
             }
         }

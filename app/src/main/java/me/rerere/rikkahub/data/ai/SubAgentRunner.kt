@@ -1,14 +1,25 @@
 package me.rerere.rikkahub.data.ai
 
 import kotlinx.coroutines.CancellationException
+import kotlinx.serialization.json.JsonObject
 import me.rerere.ai.core.ReasoningLevel
 import me.rerere.ai.core.Tool
 import me.rerere.ai.provider.Model
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
+import me.rerere.rikkahub.data.ai.tools.ASK_MAIN_AGENT_TOOL
+import me.rerere.rikkahub.data.ai.tools.ASK_SUB_AGENT_TOOL
+import me.rerere.rikkahub.data.ai.tools.GROUP_POST_TOOL
+import me.rerere.rikkahub.data.ai.tools.REQUEST_CAPABILITY_TOOL
+import me.rerere.rikkahub.data.ai.tools.createSubAgentCollaborationTools
 import me.rerere.rikkahub.data.datastore.Settings
+import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.datastore.findModelById
 import me.rerere.rikkahub.data.model.Assistant
+import me.rerere.rikkahub.data.model.CapabilityRecord
+import me.rerere.rikkahub.data.model.GroupMessage
+import me.rerere.rikkahub.data.model.GroupMessageKind
+import me.rerere.rikkahub.data.model.HIGH_PRIVILEGE_TOOLS
 import me.rerere.rikkahub.data.model.READ_ONLY_BLOCKED_TOOLS
 import me.rerere.rikkahub.data.model.SubAgent
 import me.rerere.rikkahub.data.model.SubAgentStepType
@@ -19,6 +30,9 @@ import me.rerere.rikkahub.data.model.SubAgentTurnStatus
 private const val SUB_AGENT_MAX_STEPS = 24
 private const val MAX_DISCUSSION_ROUNDS = 5
 
+/** 子智能体之间互相点名讨论的最大嵌套深度，避免 A 问 B、B 又问 A 的无限递归。 */
+private const val MAX_COLLAB_DEPTH = 2
+
 // 过程记录里单个字段保留的最大字符数，以及单次发言的总预算，避免元数据膨胀
 private const val STEP_TEXT_LIMIT = 2_000
 private const val TRACE_CHAR_BUDGET = 12_000
@@ -26,8 +40,24 @@ private const val TRACE_CHAR_BUDGET = 12_000
 // 实时过程的刷新间隔：太密会每来一个 token 就重算整份过程，太疏则不够"逐字"
 private const val LIVE_PUBLISH_INTERVAL_MS = 120L
 
-/** 子智能体之间不允许互相派发，避免无限递归。 */
-private val SUB_AGENT_EXCLUDED_TOOLS = setOf("dispatch_subagents", "discuss_subagents")
+// 主智能体用它宣告"开启小组讨论"：回答首行只输出该标记，第二行起为讨论主题
+private const val OPEN_GROUP_MARKER = "<<OPEN_GROUP_DISCUSSION>>"
+
+// 拼进子智能体提示词时，最多带入的小组讨论消息条数
+private const val MAX_GROUP_CONTEXT_MESSAGES = 24
+
+/**
+ * 子智能体的工具池里需要剔除的工具：
+ * 派发/探讨工具（避免无限递归）与协作工具（由 [createSubAgentCollaborationTools] 单独注入）。
+ */
+private val SUB_AGENT_EXCLUDED_TOOLS = setOf(
+    "dispatch_subagents",
+    "discuss_subagents",
+    ASK_MAIN_AGENT_TOOL,
+    ASK_SUB_AGENT_TOOL,
+    GROUP_POST_TOOL,
+    REQUEST_CAPABILITY_TOOL,
+)
 
 /**
  * 在主智能体的生成过程中执行子智能体任务。
@@ -41,6 +71,8 @@ private val SUB_AGENT_EXCLUDED_TOOLS = setOf("dispatch_subagents", "discuss_suba
  */
 class SubAgentRunner(
     private val generationLoop: GenerationLoop,
+    private val settingsStore: SettingsStore,
+    private val approvalStore: CapabilityApprovalStore,
 ) {
     /** 一次子智能体发言的结果。 */
     data class Turn(
@@ -71,6 +103,18 @@ class SubAgentRunner(
         )
     }
 
+    /** 主智能体对子智能体提问的回应。 */
+    sealed interface MainAgentReply {
+        /** 主智能体直接给出了回答（一对一答疑，不展开讨论） */
+        data class Answer(val text: String) : MainAgentReply
+
+        /** 主智能体同意开启小组讨论，并给出讨论主题 */
+        data class OpenGroupDiscussion(val topic: String) : MainAgentReply
+    }
+
+    /** 小组里某个空闲智能体对问题的回答。 */
+    data class GroupAnswer(val agent: String, val text: String)
+
     /** 让单个子智能体完成一个任务。 */
     suspend fun runTask(
         settings: Settings,
@@ -80,6 +124,8 @@ class SubAgentRunner(
         task: String,
         availableTools: List<Tool>,
         onTurnUpdate: ((SubAgentTraceTurn) -> Unit)? = null,
+        depth: Int = 0,
+        group: SubAgentGroupChat? = null,
     ): Turn = runTurn(
         settings = settings,
         callerAssistant = callerAssistant,
@@ -90,6 +136,8 @@ class SubAgentRunner(
         task = task.trim(),
         availableTools = availableTools,
         onTurnUpdate = onTurnUpdate,
+        depth = depth,
+        group = group,
     )
 
     /**
@@ -107,6 +155,8 @@ class SubAgentRunner(
         rounds: Int,
         availableTools: List<Tool>,
         onTurnUpdate: ((Int, SubAgentTraceTurn) -> Unit)? = null,
+        depth: Int = 0,
+        group: SubAgentGroupChat? = null,
     ): List<Turn> {
         val result = mutableListOf<Turn>()
         val maxRounds = rounds.coerceIn(1, MAX_DISCUSSION_ROUNDS)
@@ -124,6 +174,8 @@ class SubAgentRunner(
                     task = "",
                     availableTools = availableTools,
                     onTurnUpdate = { turn -> onTurnUpdate?.invoke(turnIndex, turn) },
+                    depth = depth,
+                    group = group,
                 )
             }
         }
@@ -140,6 +192,8 @@ class SubAgentRunner(
         task: String,
         availableTools: List<Tool>,
         onTurnUpdate: ((SubAgentTraceTurn) -> Unit)?,
+        depth: Int,
+        group: SubAgentGroupChat?,
     ): Turn {
         // 子智能体指定了模型就用它，否则跟随主智能体当前使用的模型
         val agentModel = settings.findModelById(agent.modelId) ?: callerModel
@@ -153,6 +207,15 @@ class SubAgentRunner(
                     append("\n\n【只读约束】你处于只读模式：只能读取与检索信息，")
                     append("禁止修改文件、执行写操作或做任何会改变系统状态的事情。")
                 }
+                if (depth < MAX_COLLAB_DEPTH) {
+                    append("\n\n【协作】你有疑惑时用 $ASK_MAIN_AGENT_TOOL 向主智能体提问（它会直接回答，")
+                    append("或决定开启小组讨论）；也可以用 $ASK_SUB_AGENT_TOOL 点名与某个子智能体一对一核对；")
+                    append("用 $REQUEST_CAPABILITY_TOOL 申请你缺少的工具（含 MCP）或权限。")
+                    if (group != null && group.isOpen) {
+                        append("小组讨论已开启：用 $GROUP_POST_TOOL 同步你的进度、问题与解决方法")
+                        append("（kind=question 抛出的问题会有空闲子智能体来回答）。")
+                    }
+                }
             },
             temperature = callerAssistant.temperature,
             topP = callerAssistant.topP,
@@ -162,6 +225,23 @@ class SubAgentRunner(
             reasoningLevel = ReasoningLevel.AUTO,
             localTools = emptyList(),
         )
+
+        // 子智能体的实时工具列表：白名单工具 + 协作工具。
+        // 通过 request_capability 获批的工具会被直接追加进这个列表，本轮后续步骤立即可用。
+        val dynamicTools = resolveTools(agent, availableTools).toMutableList()
+        if (depth < MAX_COLLAB_DEPTH) {
+            dynamicTools += createSubAgentCollaborationTools(
+                settings = settings,
+                callerAssistant = callerAssistant,
+                callerModel = callerModel,
+                runner = this,
+                selfAgent = agent,
+                pool = availableTools,
+                dynamicTools = dynamicTools,
+                depth = depth,
+                group = group,
+            )
+        }
 
         // 用当前状态拼出一份"发言快照"，实时推给界面
         fun snapshot(
@@ -191,7 +271,7 @@ class SubAgentRunner(
                 model = agentModel,
                 messages = listOf(UIMessage.user(prompt.ifBlank { "请开始你的工作。" })),
                 assistant = agentAssistant,
-                tools = resolveTools(agent, availableTools),
+                tools = dynamicTools,
                 maxSteps = SUB_AGENT_MAX_STEPS,
             ).collect { chunk ->
                 if (chunk is GenerationChunk.Messages) {
@@ -238,6 +318,361 @@ class SubAgentRunner(
             turn
         }
     }
+
+    /**
+     * 子智能体向主智能体提问 / 求助。
+     *
+     * 用主智能体（当前助手 + 模型）做一次纯文本生成并返回答复；
+     * 本次调用不携带任何工具，避免再次触发派发而形成递归。
+     */
+    suspend fun consultMainAgent(
+        settings: Settings,
+        callerAssistant: Assistant,
+        callerModel: Model,
+        agent: SubAgent,
+        question: String,
+        context: String?,
+    ): MainAgentReply {
+        val systemPrompt = buildString {
+            appendLine("你是主智能体，正在与子智能体「${agent.name}」协作。")
+            appendLine("子智能体会向你提问。默认由你直接回答：基于全局视角给出简明、可执行的结论，")
+            appendLine("不要调用任何工具，也不要复述问题。")
+            appendLine("只有当这个问题确实需要多个子智能体一起讨论时（涉及方案取舍、跨领域权衡、")
+            appendLine("需要多方信息汇总），才改为开启小组讨论：第一行只输出 $OPEN_GROUP_MARKER，第二行起写讨论主题。")
+        }
+        val userPrompt = buildString {
+            if (!context.isNullOrBlank()) {
+                appendLine("【相关上下文】")
+                appendLine(context.trim())
+                appendLine()
+            }
+            appendLine("【子智能体「${agent.name}」的问题】")
+            appendLine(question.trim())
+        }
+        val answer = callMainAgent(settings, callerAssistant, callerModel, systemPrompt, userPrompt)
+        val lines = answer.lineSequence().map { it.trim() }.filter { it.isNotEmpty() }.toList()
+        return if (lines.firstOrNull() == OPEN_GROUP_MARKER) {
+            val topic = lines.drop(1).joinToString("\n").trim().ifBlank { question.trim() }
+            MainAgentReply.OpenGroupDiscussion(topic)
+        } else {
+            MainAgentReply.Answer(answer)
+        }
+    }
+
+    /**
+     * 开启小组讨论：所有子智能体一起参与，先各自同步进度与遇到的问题，
+     * 再让空闲智能体回答讨论中抛出的问题。小组之后会一直保留，随时补充。
+     */
+    suspend fun openGroupDiscussion(
+        settings: Settings,
+        callerAssistant: Assistant,
+        callerModel: Model,
+        group: SubAgentGroupChat,
+        agents: List<SubAgent>,
+        initiator: SubAgent,
+        topic: String,
+        question: String,
+        availableTools: List<Tool>,
+        depth: Int,
+    ): String {
+        val alreadyOpen = group.isOpen
+        group.open()
+        if (!alreadyOpen) {
+            group.post("主智能体", GroupMessageKind.DECISION, "已开启小组讨论，主题：$topic")
+        }
+        group.post(initiator.name, GroupMessageKind.QUESTION, question)
+
+        val contributions = mutableListOf<GroupAnswer>()
+        if (!alreadyOpen) {
+            agents.filter { it.id != initiator.id && depth + 1 < MAX_COLLAB_DEPTH }.forEach { agent ->
+                val prompt = buildGroupPrompt(topic, agent, group.recent(MAX_GROUP_CONTEXT_MESSAGES))
+                val turn = runTurn(
+                    settings = settings,
+                    callerAssistant = callerAssistant,
+                    callerModel = callerModel,
+                    agent = agent,
+                    prompt = prompt,
+                    round = 0,
+                    task = "",
+                    availableTools = availableTools,
+                    onTurnUpdate = null,
+                    depth = depth + 1,
+                    group = group,
+                )
+                val body = turn.error ?: turn.output
+                group.post(agent.name, GroupMessageKind.PROGRESS, body)
+                contributions += GroupAnswer(agent.name, body)
+            }
+        }
+
+        val answer = answerInGroup(
+            settings = settings,
+            callerAssistant = callerAssistant,
+            callerModel = callerModel,
+            group = group,
+            agents = agents,
+            asker = initiator,
+            question = question,
+            availableTools = availableTools,
+            depth = depth,
+        )
+
+        return buildString {
+            appendLine("主题：$topic")
+            if (contributions.isNotEmpty()) {
+                appendLine()
+                appendLine("各子智能体已同步进度与建议：")
+                contributions.forEach { appendLine("- ${it.agent}：${it.text.take(300)}") }
+            }
+            if (answer != null) {
+                appendLine()
+                appendLine("【${answer.agent} 针对你的问题回答】")
+                appendLine(answer.text)
+            }
+        }.trim()
+    }
+
+    /** 在小组里挑一个"空闲"子智能体来回答问题，并把回答发到群里。 */
+    suspend fun answerInGroup(
+        settings: Settings,
+        callerAssistant: Assistant,
+        callerModel: Model,
+        group: SubAgentGroupChat,
+        agents: List<SubAgent>,
+        asker: SubAgent?,
+        question: String,
+        availableTools: List<Tool>,
+        depth: Int,
+    ): GroupAnswer? {
+        if (depth + 1 >= MAX_COLLAB_DEPTH) return null
+        val responder = group.pickNextAgent(agents, excludeId = asker?.id) ?: return null
+        val prompt = buildQuestionAnswerPrompt(
+            question = question,
+            responder = responder,
+            history = group.recent(MAX_GROUP_CONTEXT_MESSAGES),
+        )
+        val turn = runTurn(
+            settings = settings,
+            callerAssistant = callerAssistant,
+            callerModel = callerModel,
+            agent = responder,
+            prompt = prompt,
+            round = 0,
+            task = "",
+            availableTools = availableTools,
+            onTurnUpdate = null,
+            depth = depth + 1,
+            group = group,
+        )
+        val body = turn.error ?: turn.output
+        group.post(responder.name, GroupMessageKind.ANSWER, body)
+        return GroupAnswer(responder.name, body)
+    }
+
+    private fun buildGroupPrompt(
+        topic: String,
+        agent: SubAgent,
+        history: List<GroupMessage>,
+    ): String = buildString {
+        appendLine("【小组讨论主题】")
+        appendLine(topic.trim())
+        appendLine()
+        if (history.isNotEmpty()) {
+            appendLine("【当前小组讨论记录】")
+            history.forEach { appendLine("「${it.sender}」${it.content}") }
+            appendLine()
+        }
+        appendLine("你是参与者「${agent.name}」，请结合你当前的进度发言：")
+        appendLine("1) 已完成/正在做什么；2) 遇到的具体问题；3) 你的解决思路或对他人问题的建议。")
+        appendLine("请直接给出内容（不要调用工具、不要复述主题）。")
+    }
+
+    private fun buildQuestionAnswerPrompt(
+        question: String,
+        responder: SubAgent,
+        history: List<GroupMessage>,
+    ): String = buildString {
+        if (history.isNotEmpty()) {
+            appendLine("【小组讨论记录】")
+            history.forEach { appendLine("「${it.sender}」${it.content}") }
+            appendLine()
+        }
+        appendLine("【待回答的问题】")
+        appendLine(question.trim())
+        appendLine()
+        appendLine("你是「${responder.name}」，请直接回答上面的问题，并给出你的意见或建议。")
+        appendLine("如涉及文件修改，请在回答中说明需要改什么，不要真的去改。")
+    }
+
+    /**
+     * 处理子智能体的工具 / 权限申请。
+     *
+     * - 普通工具：由主智能体自动裁定；
+     * - 高权限工具（写入 / 执行类，或自身标记需要审批的 MCP 工具）：转交用户确认。
+     *
+     * 获批的工具会立即追加进 [currentTools]（本次任务后续步骤即可用），
+     * 并按配置写回该子智能体的工具白名单以持久生效。
+     */
+    suspend fun handleCapabilityRequest(
+        settings: Settings,
+        agent: SubAgent,
+        pool: List<Tool>,
+        currentTools: MutableList<Tool>,
+        requestedNames: List<String>,
+        reason: String,
+        callerAssistant: Assistant,
+        callerModel: Model,
+        group: SubAgentGroupChat? = null,
+    ): String {
+        val poolByName = pool.filter { it.name !in SUB_AGENT_EXCLUDED_TOOLS }.associateBy { it.name }
+        val held = currentTools.map { it.name }.toSet()
+        val requested = requestedNames.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+        if (requested.isEmpty()) return "[错误] 未指定要申请的工具。"
+
+        val alreadyHeld = requested.filter { it in held }
+        val unknown = requested.filter { it !in held && it !in poolByName }
+        val candidates = requested.mapNotNull { poolByName[it] }.filter { it.name !in held }
+
+        if (candidates.isEmpty()) {
+            return buildString {
+                appendLine("没有可开通的新工具。")
+                if (alreadyHeld.isNotEmpty()) appendLine("已经在用：${alreadyHeld.joinToString("、")}")
+                if (unknown.isNotEmpty()) appendLine("当前不可用（可能未配置或未启用）：${unknown.joinToString("、")}")
+            }.trim()
+        }
+
+        val high = candidates.filter { isHighPrivilege(it) }
+        val low = candidates.filterNot { it.name in high.map { h -> h.name } }
+
+        val approvedLow = if (low.isNotEmpty()) {
+            decideCapabilityByMainAgent(settings, callerAssistant, callerModel, agent, low, reason)
+        } else {
+            emptyList()
+        }
+
+        val approvedHigh = if (high.isNotEmpty()) {
+            val approved = approvalStore.request(agent.name, high.map { it.name }, reason)
+            if (approved) high else emptyList()
+        } else {
+            emptyList()
+        }
+
+        val granted = (approvedLow + approvedHigh).distinctBy { it.name }
+        granted.forEach { tool ->
+            if (currentTools.none { it.name == tool.name }) {
+                currentTools += tool.copy(needsApproval = { false })
+            }
+        }
+        if (granted.isNotEmpty()) persistGrantedTools(agent, granted)
+
+        val grantedNames = granted.map { it.name }.toSet()
+        // 把本次申请写进小组记录，随任务过程一并展示，便于追溯
+        group?.addRecord(
+            CapabilityRecord(
+                agent = agent.name,
+                tools = candidates.map { it.name },
+                reason = reason,
+                approved = granted.map { it.name },
+                denied = candidates.map { it.name }.filterNot { it in grantedNames },
+                decidedBy = if (high.isNotEmpty()) "用户" else "主智能体",
+            )
+        )
+        return buildString {
+            if (granted.isNotEmpty()) {
+                appendLine("已开通：${granted.joinToString("、") { it.name }}")
+                appendLine("这些工具在本次任务后续步骤中可以直接调用。")
+            }
+            val denied = candidates.map { it.name }.filterNot { it in grantedNames }
+            if (denied.isNotEmpty()) appendLine("未开通：${denied.joinToString("、")}")
+            if (alreadyHeld.isNotEmpty()) appendLine("已经在用：${alreadyHeld.joinToString("、")}")
+            if (unknown.isNotEmpty()) appendLine("当前不可用（可能未配置或未启用）：${unknown.joinToString("、")}")
+        }.trim().ifBlank { "申请已处理。" }
+    }
+
+    /** 普通工具申请交由主智能体自动裁定：只输出被批准的工具名，每行一个。 */
+    private suspend fun decideCapabilityByMainAgent(
+        settings: Settings,
+        callerAssistant: Assistant,
+        callerModel: Model,
+        agent: SubAgent,
+        tools: List<Tool>,
+        reason: String,
+    ): List<Tool> {
+        if (tools.isEmpty()) return emptyList()
+        val systemPrompt = "你是主智能体，负责审批子智能体的工具扩容申请。" +
+            "只输出被批准的工具名，每行一个；若全部拒绝只输出 NONE。不要输出任何其它内容。"
+        val userPrompt = buildString {
+            appendLine("子智能体「${agent.name}」的职责：${agent.description.ifBlank { "（无描述）" }}")
+            appendLine("申请理由：${reason.ifBlank { "（未说明）" }}")
+            appendLine("申请使用以下工具：")
+            tools.forEach { tool ->
+                val desc = tool.description.lineSequence().firstOrNull().orEmpty().take(80)
+                appendLine("- ${tool.name}：$desc")
+            }
+        }
+        val answer = callMainAgent(settings, callerAssistant, callerModel, systemPrompt, userPrompt)
+        val approved = answer.lineSequence()
+            .map { it.trim().removePrefix("-").trim() }
+            .filter { it.isNotEmpty() && !it.equals("NONE", ignoreCase = true) }
+            .toList()
+        if (approved.isEmpty()) return emptyList()
+        return tools.filter { tool ->
+            approved.any { it.equals(tool.name, ignoreCase = true) || it.contains(tool.name) }
+        }
+    }
+
+    /** 用主智能体做一次不带工具的单步生成，供协作问答与权限裁定复用。 */
+    private suspend fun callMainAgent(
+        settings: Settings,
+        callerAssistant: Assistant,
+        callerModel: Model,
+        systemPrompt: String,
+        userPrompt: String,
+    ): String {
+        val assistantForCall = callerAssistant.copy(
+            systemPrompt = systemPrompt,
+            streamOutput = false,
+            localTools = emptyList(),
+        )
+        var history: List<UIMessage> = emptyList()
+        generationLoop.generateText(
+            settings = settings,
+            model = callerModel,
+            messages = listOf(UIMessage.user(userPrompt)),
+            assistant = assistantForCall,
+            tools = emptyList(),
+            maxSteps = 1,
+        ).collect { chunk ->
+            if (chunk is GenerationChunk.Messages) history = chunk.messages
+        }
+        return history.lastOrNull()?.toText()?.trim().orEmpty()
+    }
+
+    /** 把获批的工具写回子智能体配置以持久生效；只读子智能体不持久化写入类工具。 */
+    private suspend fun persistGrantedTools(agent: SubAgent, granted: List<Tool>) {
+        val names = granted.map { it.name }
+            .filter { !agent.readOnly || it !in READ_ONLY_BLOCKED_TOOLS }
+        if (names.isEmpty()) return
+        runCatching {
+            settingsStore.update { current ->
+                current.copy(
+                    subAgents = current.subAgents.map { existing ->
+                        // toolNames 为空表示"可用全部工具"，此时无需也不应写回
+                        if (existing.id != agent.id || existing.toolNames.isEmpty()) {
+                            existing
+                        } else {
+                            existing.copy(toolNames = (existing.toolNames + names).distinct())
+                        }
+                    }
+                )
+            }
+        }
+    }
+
+    /** 是否为需要向用户确认的高权限工具。 */
+    private fun isHighPrivilege(tool: Tool): Boolean =
+        tool.name in HIGH_PRIVILEGE_TOOLS ||
+            runCatching { tool.needsApproval(JsonObject(emptyMap())) }.getOrDefault(false)
 
     private fun resolveTools(agent: SubAgent, availableTools: List<Tool>): List<Tool> {
         val pool = availableTools.filter { it.name !in SUB_AGENT_EXCLUDED_TOOLS }

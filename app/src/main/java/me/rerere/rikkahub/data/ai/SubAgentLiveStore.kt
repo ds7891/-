@@ -4,6 +4,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import me.rerere.rikkahub.data.model.CapabilityRecord
+import me.rerere.rikkahub.data.model.GroupMessage
 import me.rerere.rikkahub.data.model.SubAgentTrace
 import me.rerere.rikkahub.data.model.SubAgentTraceTurn
 import kotlin.coroutines.AbstractCoroutineContextElement
@@ -49,6 +51,20 @@ class SubAgentLiveStore {
         }
     }
 
+    /** 追加一条小组讨论消息，界面据此实时刷新小组对话。 */
+    fun appendGroupMessage(key: String, message: GroupMessage) {
+        mutate(key) { trace ->
+            trace.copy(groupMessages = (trace.groupMessages + message).takeLast(MAX_GROUP_MESSAGES))
+        }
+    }
+
+    /** 追加一条工具 / 权限申请记录。 */
+    fun appendCapabilityRecord(key: String, record: CapabilityRecord) {
+        mutate(key) { trace ->
+            trace.copy(capabilityRecords = (trace.capabilityRecords + record).takeLast(MAX_GROUP_MESSAGES))
+        }
+    }
+
     private fun mutate(key: String, transform: (SubAgentTrace) -> SubAgentTrace) {
         _traces.update { current ->
             // LinkedHashMap 重新插入以维持最近使用顺序，从而按 LRU 淘汰旧条目
@@ -65,5 +81,6 @@ class SubAgentLiveStore {
 
     private companion object {
         const val MAX_LIVE_TRACES = 8
+        const val MAX_GROUP_MESSAGES = 200
     }
 }

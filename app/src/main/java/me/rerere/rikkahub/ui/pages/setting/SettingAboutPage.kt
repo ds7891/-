@@ -5,10 +5,13 @@ import me.rerere.hugeicons.stroke.Code
 import me.rerere.hugeicons.stroke.Earth
 import me.rerere.hugeicons.stroke.File02
 import me.rerere.hugeicons.stroke.Github
+import me.rerere.hugeicons.stroke.MessageAdd01
 import me.rerere.hugeicons.stroke.SmartPhone01
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
@@ -51,6 +54,13 @@ import me.rerere.rikkahub.ui.theme.CustomColors
 import me.rerere.rikkahub.utils.SoundEffectPlayer
 import me.rerere.rikkahub.utils.openUrl
 import me.rerere.rikkahub.utils.plus
+
+/** 清水内测 QQ 群号 */
+private const val QQ_GROUP_NUMBER = "574893870"
+
+/** 点击"加入QQ群"卡片后跳转的加群链接 */
+private const val QQ_GROUP_URL =
+    "https://qun.qq.com/universal-share/share?ac=1&authKey=3kdSzHvv2mr%2BKpPRHAexnMJiw6SaMaoa1kRHMe1sM5xUb%2BeA%2F7vDGIkrGI%2FNsDj6&busi_data=eyJncm91cENvZGUiOiI1NzQ4OTM4NzAiLCJ0b2tlbiI6Im1CRXNXaGFNZUxTcXRHS2xoNlA4Q0FVejMwS1hMV1hldnhZaU5oVnlhVW5MQ2h1eDZmdzlhdlljV1libmN2UlQiLCJ1aW4iOiIzNzc0NzI0MjcyIn0%3D&data=nq5tBLvxtJJwvW7a2MBGaTSXFy1T-x7EzvbeZYqtq0XOirjZdt47Zh7czN7DCUKtXa7RUkxA98EGk24yJkCImQ&svctype=4&tempid=h5_group_info"
 
 @Composable
 fun SettingAboutPage() {
@@ -152,6 +162,20 @@ fun SettingAboutPage() {
                                 Text("${BuildConfig.VERSION_NAME} / ${BuildConfig.VERSION_CODE}")
                             },
                             headlineContent = { Text(stringResource(R.string.about_page_version)) },
+                        )
+                        item(
+                            onClick = { context.openUrl(QQ_GROUP_URL) },
+                            leadingContent = { Icon(HugeIcons.MessageAdd01, null) },
+                            supportingContent = { Text(QQ_GROUP_NUMBER) },
+                            trailingContent = {
+                                Box(
+                                    modifier = Modifier
+                                        .size(8.dp)
+                                        .clip(CircleShape)
+                                        .background(MaterialTheme.colorScheme.primary)
+                                )
+                            },
+                            headlineContent = { Text("加入QQ群") },
                         )
                         item(
                             leadingContent = { Icon(HugeIcons.SmartPhone01, null) },

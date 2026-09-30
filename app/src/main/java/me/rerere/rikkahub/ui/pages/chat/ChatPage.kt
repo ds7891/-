@@ -61,6 +61,7 @@ import me.rerere.hugeicons.stroke.LeftToRightListBullet
 import me.rerere.hugeicons.stroke.Menu03
 import me.rerere.hugeicons.stroke.MessageAdd01
 import me.rerere.rikkahub.R
+import me.rerere.rikkahub.data.ai.CapabilityApprovalStore
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.findProvider
 import me.rerere.rikkahub.data.datastore.getCurrentAssistant
@@ -532,6 +533,38 @@ private fun ChatPageContent(
                 attachmentPickerActions = attachmentPickerActions,
                 onStartVoiceMode = onStartVoiceMode,
                 onDismiss = { showFilesSheet = false },
+            )
+        }
+
+        // 子智能体申请高权限工具时，弹窗交由用户确认
+        val approvalStore: CapabilityApprovalStore = koinInject()
+        val pendingApprovals by approvalStore.requests.collectAsStateWithLifecycle()
+        pendingApprovals.firstOrNull()?.let { request ->
+            AlertDialog(
+                onDismissRequest = { },
+                title = { Text("子智能体权限申请") },
+                text = {
+                    Text(
+                        buildString {
+                            appendLine("子智能体「${request.agentName}」申请使用以下高权限工具：")
+                            request.tools.forEach { appendLine("· $it") }
+                            if (request.reason.isNotBlank()) {
+                                appendLine()
+                                appendLine("理由：${request.reason}")
+                            }
+                        }.trim()
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = { approvalStore.resolve(request.id, true) }) {
+                        Text("允许")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { approvalStore.resolve(request.id, false) }) {
+                        Text("拒绝")
+                    }
+                },
             )
         }
     }

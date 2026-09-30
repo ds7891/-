@@ -186,7 +186,8 @@ fun ChatDrawerContent(
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             if (updateChecksEnabled && !isPlayStore) {
-                UpdateCard(vm)
+                // 检查更新接口当前不可用（会显示"检查更新失败"），暂时屏蔽更新卡片
+                // UpdateCard(vm)
             }
 
             BackupReminderCard(
