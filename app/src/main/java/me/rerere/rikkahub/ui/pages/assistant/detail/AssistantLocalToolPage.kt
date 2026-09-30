@@ -1,6 +1,7 @@
 package me.rerere.rikkahub.ui.pages.assistant.detail
 
 import android.Manifest
+import android.os.Build
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -33,7 +34,9 @@ import me.rerere.rikkahub.ui.components.ui.permission.PermissionManager
 import me.rerere.rikkahub.ui.components.ui.permission.rememberPermissionState
 import me.rerere.rikkahub.ui.context.LocalToaster
 import me.rerere.rikkahub.ui.theme.CustomColors
+import me.rerere.rikkahub.utils.hasAllFilesAccess
 import me.rerere.rikkahub.utils.hasUsageStatsPermission
+import me.rerere.rikkahub.utils.openAllFilesAccessSettings
 import me.rerere.rikkahub.utils.openUsageAccessSettings
 import org.koin.androidx.compose.koinViewModel
 import org.koin.core.parameter.parametersOf
@@ -101,6 +104,28 @@ private fun AssistantLocalToolContent(
     )
     PermissionManager(permissionState = calendarPermissionState)
 
+    // Android 11 以下：读写外部存储是普通运行时权限，可直接弹窗申请
+    val storagePermissionState = rememberPermissionState(
+        permissions = setOf(
+            PermissionInfo(
+                permission = Manifest.permission.READ_EXTERNAL_STORAGE,
+                displayName = { Text(stringResource(R.string.permission_storage_read)) },
+                usage = { Text(stringResource(R.string.permission_storage_read_desc)) },
+                required = true
+            ),
+            PermissionInfo(
+                permission = Manifest.permission.WRITE_EXTERNAL_STORAGE,
+                displayName = { Text(stringResource(R.string.permission_storage_write)) },
+                usage = { Text(stringResource(R.string.permission_storage_write_desc)) },
+                required = true
+            ),
+        )
+    )
+    PermissionManager(permissionState = storagePermissionState)
+
+    val fileSystemPermissionRequiredText =
+        stringResource(R.string.assistant_page_local_tools_file_system_permission_required)
+
     fun toggleLocalTool(option: LocalToolOption, enabled: Boolean) {
         if (enabled && option == LocalToolOption.ScreenTime && !context.hasUsageStatsPermission()) {
             toaster.show(message = permissionRequiredText, type = ToastType.Warning)
@@ -109,6 +134,15 @@ private fun AssistantLocalToolContent(
         if (enabled && option == LocalToolOption.Calendar && !calendarPermissionState.allPermissionsGranted) {
             calendarPermissionState.requestPermissions()
             return
+        }
+        if (enabled && (option == LocalToolOption.FileSystem || option == LocalToolOption.Apk) && !context.hasAllFilesAccess()) {
+            // Android 11+ 需跳转系统"所有文件访问权限"页；Android 11 以下直接弹运行时权限
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                toaster.show(message = fileSystemPermissionRequiredText, type = ToastType.Warning)
+                context.openAllFilesAccessSettings()
+            } else if (!storagePermissionState.allPermissionsGranted) {
+                storagePermissionState.requestPermissions()
+            }
         }
         val newLocalTools = if (enabled) {
             assistant.localTools + option
@@ -223,6 +257,34 @@ private fun AssistantLocalToolContent(
                     Switch(
                         checked = assistant.localTools.contains(LocalToolOption.Calendar),
                         onCheckedChange = { toggleLocalTool(LocalToolOption.Calendar, it) }
+                    )
+                }
+            )
+            item(
+                headlineContent = {
+                    Text(stringResource(R.string.assistant_page_local_tools_file_system_title))
+                },
+                supportingContent = {
+                    Text(stringResource(R.string.assistant_page_local_tools_file_system_desc))
+                },
+                trailingContent = {
+                    Switch(
+                        checked = assistant.localTools.contains(LocalToolOption.FileSystem),
+                        onCheckedChange = { toggleLocalTool(LocalToolOption.FileSystem, it) }
+                    )
+                }
+            )
+            item(
+                headlineContent = {
+                    Text(stringResource(R.string.assistant_page_local_tools_apk_title))
+                },
+                supportingContent = {
+                    Text(stringResource(R.string.assistant_page_local_tools_apk_desc))
+                },
+                trailingContent = {
+                    Switch(
+                        checked = assistant.localTools.contains(LocalToolOption.Apk),
+                        onCheckedChange = { toggleLocalTool(LocalToolOption.Apk, it) }
                     )
                 }
             )

@@ -1,5 +1,6 @@
 package me.rerere.rikkahub.ui.components.message.tools
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -19,6 +20,9 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -29,6 +33,8 @@ import androidx.compose.ui.unit.dp
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.AiBrain01
+import me.rerere.hugeicons.stroke.ArrowDown01
+import me.rerere.hugeicons.stroke.ArrowUp01
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.ai.SubAgentLiveStore
 import me.rerere.rikkahub.data.ai.tools.DISCUSS_SUB_AGENTS_TOOL
@@ -166,6 +172,10 @@ private fun SubAgentTraceContent(context: ToolUIContext, scrollable: Boolean = f
 
 @Composable
 private fun SubAgentTurnCard(turn: SubAgentTraceTurn) {
+    // 默认折叠：无论本次分派了多少个子智能体，都只露出一行标题，点击卡片标题才展开详情。
+    // 用 agent + round 作 key，避免流式刷新内容时把展开状态重置掉。
+    var expanded by remember(turn.agent, turn.round) { mutableStateOf(false) }
+
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
@@ -179,7 +189,9 @@ private fun SubAgentTurnCard(turn: SubAgentTraceTurn) {
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { expanded = !expanded },
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
@@ -214,33 +226,41 @@ private fun SubAgentTurnCard(turn: SubAgentTraceTurn) {
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
-            }
-
-            if (turn.task.isNotBlank()) {
-                SubAgentLabeledText(
-                    label = stringResource(R.string.chat_message_sub_agent_task),
-                    text = turn.task,
+                Icon(
+                    imageVector = if (expanded) HugeIcons.ArrowUp01 else HugeIcons.ArrowDown01,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
 
-            turn.steps.forEach { step ->
-                SubAgentStepView(step)
-            }
+            if (expanded) {
+                if (turn.task.isNotBlank()) {
+                    SubAgentLabeledText(
+                        label = stringResource(R.string.chat_message_sub_agent_task),
+                        text = turn.task,
+                    )
+                }
 
-            if (turn.output.isNotBlank()) {
-                HorizontalDivider()
-                SubAgentLabeledText(
-                    label = stringResource(R.string.chat_message_sub_agent_output),
-                    text = turn.output,
-                )
-            }
+                turn.steps.forEach { step ->
+                    SubAgentStepView(step)
+                }
 
-            if (!turn.error.isNullOrBlank()) {
-                Text(
-                    text = stringResource(R.string.chat_message_sub_agent_failed) + ": " + turn.error,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error,
-                )
+                if (turn.output.isNotBlank()) {
+                    HorizontalDivider()
+                    SubAgentLabeledText(
+                        label = stringResource(R.string.chat_message_sub_agent_output),
+                        text = turn.output,
+                    )
+                }
+
+                if (!turn.error.isNullOrBlank()) {
+                    Text(
+                        text = stringResource(R.string.chat_message_sub_agent_failed) + ": " + turn.error,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
             }
         }
     }

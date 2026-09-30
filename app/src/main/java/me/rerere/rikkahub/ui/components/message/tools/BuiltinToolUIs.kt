@@ -57,11 +57,13 @@ import me.rerere.hugeicons.stroke.Eraser
 import me.rerere.hugeicons.stroke.GlobalSearch
 import me.rerere.hugeicons.stroke.MagicWand01
 import me.rerere.hugeicons.stroke.Message02
+import me.rerere.hugeicons.stroke.Package
 import me.rerere.hugeicons.stroke.QuillWrite01
 import me.rerere.hugeicons.stroke.Refresh01
 import me.rerere.hugeicons.stroke.Search01
 import me.rerere.hugeicons.stroke.Calendar03
 import me.rerere.hugeicons.stroke.CalendarAdd01
+import me.rerere.hugeicons.stroke.Files02
 import me.rerere.hugeicons.stroke.SmartPhone01
 import me.rerere.hugeicons.stroke.Time02
 import me.rerere.hugeicons.stroke.VolumeHigh
@@ -561,6 +563,39 @@ object CalendarCreateToolUI : ToolUIRenderer {
     override fun title(context: ToolUIContext): String {
         val eventTitle = context.arguments.getStringContent("title") ?: ""
         return stringResource(R.string.chat_message_tool_calendar_create, eventTitle)
+    }
+}
+
+object FileSystemToolUI : ToolUIRenderer {
+    override val toolName: String = "file_system"
+
+    override fun icon(context: ToolUIContext): ImageVector = HugeIcons.Files02
+
+    @Composable
+    override fun title(context: ToolUIContext): String {
+        val path = context.arguments.getStringContent("path")
+        return if (path.isNullOrBlank()) {
+            stringResource(R.string.chat_message_tool_file_system_title)
+        } else {
+            stringResource(R.string.chat_message_tool_file_system_action, path)
+        }
+    }
+}
+
+object ApkToolUI : ToolUIRenderer {
+    override val toolName: String = "apk_tool"
+
+    override fun icon(context: ToolUIContext): ImageVector = HugeIcons.Package
+
+    @Composable
+    override fun title(context: ToolUIContext): String {
+        val action = context.arguments.getStringContent("action")
+        val path = context.arguments.getStringContent("path")
+        return if (path.isNullOrBlank()) {
+            stringResource(R.string.chat_message_tool_apk_title)
+        } else {
+            stringResource(R.string.chat_message_tool_apk_action, action.orEmpty(), path)
+        }
     }
 }
 

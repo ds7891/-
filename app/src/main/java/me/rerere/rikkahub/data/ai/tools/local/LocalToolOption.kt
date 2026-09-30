@@ -32,4 +32,12 @@ sealed class LocalToolOption {
     @Serializable
     @SerialName("calendar")
     data object Calendar : LocalToolOption()
+
+    @Serializable
+    @SerialName("file_system")
+    data object FileSystem : LocalToolOption()
+
+    @Serializable
+    @SerialName("apk")
+    data object Apk : LocalToolOption()
 }

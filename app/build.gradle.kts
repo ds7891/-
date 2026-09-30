@@ -269,6 +269,10 @@ dependencies {
     // Reorderable (https://github.com/Calvin-LL/Reorderable/)
     implementation(libs.reorderable)
 
+    // APK 查看 / 改包 / 签名所需的工具库
+    implementation(libs.apksig)
+    implementation(libs.baksmali)
+
     // lucide icons
     implementation(libs.lucide.icons)
     implementation(libs.huge.icons)

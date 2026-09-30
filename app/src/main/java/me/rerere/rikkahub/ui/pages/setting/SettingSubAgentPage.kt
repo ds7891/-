@@ -475,27 +475,32 @@ private fun SubAgentEditModal(
                         label = { Text(stringResource(R.string.setting_sub_agent_page_tools)) },
                         description = { Text(stringResource(R.string.setting_sub_agent_page_tools_desc)) },
                     ) {
-                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            FlowRow(
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                verticalArrangement = Arrangement.spacedBy(8.dp),
-                            ) {
-                                (KNOWN_SUB_AGENT_TOOLS + mcpSubAgentToolOptions(mcpServers)).forEach { (toolName, label) ->
-                                    val selected = toolName in agent.toolNames
-                                    FilterChip(
-                                        selected = selected,
-                                        onClick = {
-                                            val newTools = if (selected) {
-                                                agent.toolNames - toolName
-                                            } else {
-                                                agent.toolNames + toolName
-                                            }
-                                            update(agent.copy(toolNames = newTools))
-                                        },
-                                        label = { Text(label, style = MaterialTheme.typography.labelSmall) },
-                                    )
-                                }
+                        val mcpOptions = remember(mcpServers) { mcpSubAgentToolOptions(mcpServers) }
+                        val onToggleTool: (String) -> Unit = { toolName ->
+                            val newTools = if (toolName in agent.toolNames) {
+                                agent.toolNames - toolName
+                            } else {
+                                agent.toolNames + toolName
                             }
+                            update(agent.copy(toolNames = newTools))
+                        }
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            CollapsibleToolGroup(
+                                title = stringResource(R.string.setting_sub_agent_page_tools_builtin),
+                                description = stringResource(R.string.setting_sub_agent_page_tools_builtin_desc),
+                                options = KNOWN_SUB_AGENT_TOOLS,
+                                selected = agent.toolNames,
+                                emptyText = null,
+                                onToggle = onToggleTool,
+                            )
+                            CollapsibleToolGroup(
+                                title = stringResource(R.string.setting_sub_agent_page_tools_mcp),
+                                description = stringResource(R.string.setting_sub_agent_page_tools_mcp_desc),
+                                options = mcpOptions,
+                                selected = agent.toolNames,
+                                emptyText = stringResource(R.string.setting_sub_agent_page_tools_mcp_empty),
+                                onToggle = onToggleTool,
+                            )
                             Text(
                                 text = stringResource(R.string.setting_sub_agent_page_tools_hint),
                                 style = MaterialTheme.typography.labelSmall,
@@ -519,6 +524,95 @@ private fun SubAgentEditModal(
                         }
                     ) {
                         Text(stringResource(R.string.setting_mcp_page_save))
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 「可用工具」下的折叠分组：默认折叠，点击标题展开，再点击折叠。
+ * 用于把工具按「内置工具 / MCP 工具」分类，避免一次性铺开过多选项。
+ */
+@Composable
+private fun CollapsibleToolGroup(
+    title: String,
+    description: String,
+    options: List<Pair<String, String>>,
+    selected: List<String>,
+    emptyText: String?,
+    onToggle: (String) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val selectedCount = options.count { it.first in selected }
+
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Card(
+            onClick = { expanded = !expanded },
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(
+                containerColor = CustomColors.listItemColors.containerColor
+            ),
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(12.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                ) {
+                    Text(
+                        text = title,
+                        style = MaterialTheme.typography.bodyMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        text = description,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                if (selectedCount > 0) {
+                    Tag(type = TagType.INFO) {
+                        Text(stringResource(R.string.setting_sub_agent_page_tools_selected_count, selectedCount))
+                    }
+                }
+                Icon(
+                    imageVector = if (expanded) HugeIcons.ArrowUp01 else HugeIcons.ArrowDown01,
+                    contentDescription = null,
+                )
+            }
+        }
+
+        if (expanded) {
+            if (options.isEmpty()) {
+                if (emptyText != null) {
+                    Text(
+                        text = emptyText,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 4.dp),
+                    )
+                }
+            } else {
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    options.forEach { (toolName, label) ->
+                        FilterChip(
+                            selected = toolName in selected,
+                            onClick = { onToggle(toolName) },
+                            label = { Text(label, style = MaterialTheme.typography.labelSmall) },
+                        )
                     }
                 }
             }

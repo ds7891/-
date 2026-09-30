@@ -113,7 +113,61 @@ fun Context.openUsageAccessSettings() {
 }
 
 /**
- * Open a url
+ * 是否已获得"访问全部文件"的能力。
+ *
+ * - Android 11(API 30)及以上：需要 MANAGE_EXTERNAL_STORAGE（所有文件访问权限）；
+ * - Android 11 以下：需要 READ/WRITE_EXTERNAL_STORAGE 运行时权限。
+ *
+ * 拥有该能力后即可像文件管理器一样遍历本机所有存储目录。
+ */
+fun Context.hasAllFilesAccess(): Boolean {
+    return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        Environment.isExternalStorageManager()
+    } else {
+        ContextCompat.checkSelfPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE) ==
+            PackageManager.PERMISSION_GRANTED &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE) ==
+            PackageManager.PERMISSION_GRANTED
+    }
+}
+
+/**
+ * 跳转到系统设置页，引导用户授予"访问全部文件"的能力。
+ *
+ * - Android 11 及以上：打开"所有文件访问权限"页（MANAGE_EXTERNAL_STORAGE）；
+ * - Android 11 以下：打开本应用的详情页，由用户手动开启存储权限
+ *   （正常流程下应优先走运行时权限弹窗申请）。
+ */
+fun Context.openAllFilesAccessSettings() {
+    runCatching {
+        val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
+                data = "package:$packageName".toUri()
+            }
+        } else {
+            Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                data = "package:$packageName".toUri()
+            }
+        }
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        startActivity(intent)
+    }.onFailure {
+        Log.e(TAG, "openAllFilesAccessSettings failed", it)
+        // 部分 ROM 不支持应用级入口，退回到全局"所有文件访问权限"列表
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            runCatching {
+                startActivity(
+                    Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION).apply {
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                )
+            }.onFailure { e -> Log.e(TAG, "openAllFilesAccessSettings fallback failed", e) }
+        }
+    }
+}
+
+/**
+ * 打开一个 url
  */
 fun Context.openUrl(url: String) {
     Log.i(TAG, "openUrl: $url")

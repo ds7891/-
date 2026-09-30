@@ -28,6 +28,10 @@ class LocalTools(
 
     val calendarCreateTool by lazy { buildCalendarCreateTool(context) }
 
+    val fileSystemTool by lazy { buildFileSystemTool(context) }
+
+    val apkTool by lazy { buildApkTool(context) }
+
     fun getTools(options: List<LocalToolOption>): List<Tool> {
         val tools = mutableListOf<Tool>()
         if (options.contains(LocalToolOption.JavascriptEngine)) {
@@ -51,6 +55,12 @@ class LocalTools(
         if (options.contains(LocalToolOption.Calendar)) {
             tools.add(calendarQueryTool)
             tools.add(calendarCreateTool)
+        }
+        if (options.contains(LocalToolOption.FileSystem)) {
+            tools.add(fileSystemTool)
+        }
+        if (options.contains(LocalToolOption.Apk)) {
+            tools.add(apkTool)
         }
         return tools
     }
