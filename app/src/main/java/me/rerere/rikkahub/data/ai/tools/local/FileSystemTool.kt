@@ -1,9 +1,13 @@
 package me.rerere.rikkahub.data.ai.tools.local
 
+import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Environment
 import android.os.StatFs
 import android.util.Base64
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonArray
@@ -50,9 +54,10 @@ internal fun buildFileSystemTool(context: Context): Tool = Tool(
         path 支持绝对路径、相对路径（相对内部共享存储根目录）、以及 ~ 与 /sdcard 前缀。
         常用动作：roots（列出所有存储卷）、list（列目录）、read（读文件）、write（写文件）、append（追加）、
         mkdir（建目录）、delete（删除）、move（移动/重命名）、copy（复制）、exists（是否存在）、
-        stat（详细信息）、search（按文件名搜索）。
+        stat（详细信息）、search（按文件名搜索）、env（诊断当前存储权限与分区存储状态）。
         read/write/append 默认按 UTF-8 文本处理，可用 encoding=base64 读写二进制；
         write/append/delete/move/copy 会改动磁盘，需用户确认后才执行。
+        任何操作报错时，返回里都会带上 env 诊断字段，可据此判断是权限不足还是被系统存储策略拦截。
     """.trimIndent().replace("\n", " "),
     needsApproval = { args ->
         val action = runCatching {
@@ -70,7 +75,7 @@ internal fun buildFileSystemTool(context: Context): Tool = Tool(
                         buildJsonArray {
                             listOf(
                                 "roots", "list", "read", "write", "append", "mkdir",
-                                "delete", "move", "copy", "exists", "stat", "search",
+                                "delete", "move", "copy", "exists", "stat", "search", "env",
                             ).forEach { add(it) }
                         }
                     )
@@ -131,17 +136,57 @@ internal fun buildFileSystemTool(context: Context): Tool = Tool(
                 "尚未获得\"所有文件访问权限\"。请用户在助手的本地工具设置中开启\"文件系统\"并授予存储权限后重试。",
             )
         } else {
-            runCatching { runFileAction(args.jsonObject) }
+            runCatching { runFileAction(args.jsonObject, context) }
                 .getOrElse { errorJson("TOOL_ERROR", "执行失败：${it.message ?: it::class.simpleName}") }
         }
-        listOf(UIMessagePart.Text(output))
+        listOf(UIMessagePart.Text(output.withEnvOnFailure(context)))
     },
 )
 
-private fun runFileAction(params: JsonObject): String {
+/** 出错或结果可疑（列出 0 项）时附带环境诊断，便于区分"权限没给"与"被分区存储拦截"。 */
+private fun String.withEnvOnFailure(context: Context): String {
+    val obj = runCatching { Json.parseToJsonElement(this).jsonObject }.getOrNull() ?: return this
+    val suspicious = obj.containsKey("error") ||
+        obj["count"]?.jsonPrimitive?.contentOrNull == "0"
+    if (!suspicious) return this
+    return buildJsonObject {
+        obj.forEach { (key, value) -> put(key, value) }
+        put("env", envJson(context))
+    }.toString()
+}
+
+/**
+ * 当前进程的存储环境：Android 10 上 [Environment.isExternalStorageLegacy] 为 false
+ * 即代表仍处于分区存储模式，此时即使授予读写权限也无法直接访问 /sdcard。
+ */
+private fun envJson(context: Context): JsonObject = buildJsonObject {
+    put("sdk_int", Build.VERSION.SDK_INT)
+    put("target_sdk", context.applicationInfo.targetSdkVersion)
+    put("external_root", EXTERNAL_ROOT)
+    val root = File(EXTERNAL_ROOT)
+    put("root_exists", root.exists())
+    put("root_can_read", root.canRead())
+    put("root_can_write", root.canWrite())
+    put("root_listable", root.list() != null)
+    put("root_child_count", root.list()?.size ?: 0)
+    put(
+        "read_external_granted",
+        context.checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) ==
+            PackageManager.PERMISSION_GRANTED,
+    )
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        put("legacy_external_storage", Environment.isExternalStorageLegacy())
+    }
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        put("all_files_access", Environment.isExternalStorageManager())
+    }
+}
+
+private fun runFileAction(params: JsonObject, context: Context): String {
     val action = params.stringOrNull("action")?.trim().orEmpty()
     return when (action) {
         "roots" -> actionRoots()
+        "env" -> buildJsonObject { put("env", envJson(context)) }.toString()
         "list" -> actionList(params)
         "read" -> actionRead(params)
         "write" -> actionWrite(params, append = false)
