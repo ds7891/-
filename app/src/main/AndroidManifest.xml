@@ -53,9 +53,14 @@
     </intent>
   </queries>
 
+  <!-- Android 10（API 29）上，targetSdk >= 29 会强制分区存储(Scoped Storage)：
+       即便已授予 READ/WRITE_EXTERNAL_STORAGE，也无法用 File 路径访问 /sdcard。
+       开启 legacy 外部存储后即可像文件管理器一样访问全部共享存储；
+       该标志在 Android 11+ 由系统忽略，改由 MANAGE_EXTERNAL_STORAGE 接管。 -->
   <application
     android:name=".QingshuiApp"
     android:largeHeap="true"
+    android:requestLegacyExternalStorage="true"
     android:allowBackup="true"
     android:appCategory="productivity"
     android:dataExtractionRules="@xml/data_extraction_rules"
@@ -66,6 +71,7 @@
     android:supportsRtl="true"
     android:theme="@style/Theme.Rikkahub"
     android:usesCleartextTraffic="true"
+    tools:ignore="ScopedStorage"
     tools:targetApi="33">
     <activity
       android:name=".ui.activity.SafeModeActivity"
