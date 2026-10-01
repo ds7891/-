@@ -269,9 +269,10 @@ dependencies {
     // Reorderable (https://github.com/Calvin-LL/Reorderable/)
     implementation(libs.reorderable)
 
-    // APK 查看 / 改包 / 签名所需的工具库
+    // APK 查看 / 改包 / 签名所需的工具库（baksmali 反编译，smali 回编译）
     implementation(libs.apksig)
     implementation(libs.baksmali)
+    implementation(libs.smali)
 
     // lucide icons
     implementation(libs.lucide.icons)
@@ -279,6 +280,11 @@ dependencies {
 
     // image viewer
     implementation(libs.image.viewer)
+
+    // media3 (视频播放器)
+    implementation(libs.androidx.media3.exoplayer)
+    implementation(libs.androidx.media3.ui)
+    implementation(libs.androidx.media3.common)
 
     // JLatexMath
     // https://github.com/rikkahub/jlatexmath-android

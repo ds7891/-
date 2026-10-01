@@ -348,6 +348,9 @@ fun ChatInput(
                                 )
                             }
 
+                            // MCP 快捷管理：直接打开 MCP 面板，可启停 / 添加 / 删除
+                            ChatMcpButton(settings = settings)
+
                         }
 
                         ActionIconButton(

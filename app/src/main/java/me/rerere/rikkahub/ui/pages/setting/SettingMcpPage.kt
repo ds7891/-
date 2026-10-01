@@ -203,6 +203,21 @@ fun SettingMcpPage(vm: SettingVM = koinViewModel()) {
                         onEdit = {
                             editState.open(mcpConfig)
                         },
+                        onToggleEnable = { enabled ->
+                            vm.updateSettings(
+                                settings.copy(
+                                    mcpServers = mcpConfigs.map { config ->
+                                        if (config.id == mcpConfig.id) {
+                                            config.clone(
+                                                commonOptions = config.commonOptions.copy(enable = enabled)
+                                            )
+                                        } else {
+                                            config
+                                        }
+                                    }
+                                )
+                            )
+                        },
                         onDelete = {
                             vm.updateSettings(
                                 settings.copy(
@@ -251,6 +266,7 @@ private fun McpServerItem(
     modifier: Modifier = Modifier,
     onDelete: () -> Unit,
     onEdit: (McpServerConfig) -> Unit,
+    onToggleEnable: (Boolean) -> Unit = {},
 ) {
     val mcpManager = koinInject<McpManager>()
     val status by mcpManager.getStatus(item).collectAsStateWithLifecycle(McpStatus.Idle)
@@ -335,6 +351,9 @@ private fun McpServerItem(
                     Text(
                         text = item.commonOptions.name,
                         style = MaterialTheme.typography.titleLarge,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
                     )
                     val dotColor =
                         if (item.commonOptions.enable) MaterialTheme.extendColors.green6 else MaterialTheme.extendColors.red6
@@ -346,6 +365,11 @@ private fun McpServerItem(
                                     color = dotColor
                                 )
                             }
+                    )
+                    Switch(
+                        checked = item.commonOptions.enable,
+                        onCheckedChange = onToggleEnable,
+                        size = SwitchSize.Small,
                     )
                 }
 
@@ -427,7 +451,7 @@ private fun McpServerItem(
 }
 
 @Composable
-private fun McpServerConfigModal(state: EditState<McpServerConfig>) {
+internal fun McpServerConfigModal(state: EditState<McpServerConfig>) {
     state.EditStateContent { config, updateValue ->
         val pagerState = rememberPagerState { 2 }
         val scope = rememberCoroutineScope()

@@ -40,4 +40,12 @@ sealed class LocalToolOption {
     @Serializable
     @SerialName("apk")
     data object Apk : LocalToolOption()
+
+    @Serializable
+    @SerialName("media")
+    data object Media : LocalToolOption()
+
+    @Serializable
+    @SerialName("http")
+    data object Http : LocalToolOption()
 }

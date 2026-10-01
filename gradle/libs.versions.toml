@@ -66,7 +66,7 @@ termux = "0.118.0"
 diffutils = "4.17"
 snakeyaml = "2.7"
 apksig = "9.4.0"
-baksmali = "2.5.2"
+smaliTools = "2.5.2"
 
 [libraries]
 android-gradle-plugin = { module = "com.android.tools.build:gradle", version.ref = "agp" }
@@ -187,7 +187,8 @@ sqlite-android = { module = "com.github.rikkahub:sqlite-android", version.ref = 
 termux-terminal-view = { module = "com.termux.termux-app:terminal-view", version.ref = "termux" }
 guava-listenablefuture = { module = "com.google.guava:listenablefuture", version = "9999.0-empty-to-avoid-conflict-with-guava" }
 apksig = { module = "com.android.tools.build:apksig", version.ref = "apksig" }
-baksmali = { module = "org.smali:baksmali", version.ref = "baksmali" }
+baksmali = { module = "org.smali:baksmali", version.ref = "smaliTools" }
+smali = { module = "org.smali:smali", version.ref = "smaliTools" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

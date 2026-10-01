@@ -167,6 +167,31 @@ fun Context.openAllFilesAccessSettings() {
 }
 
 /**
+ * 是否已被授予"显示在其他应用上层"（悬浮窗）权限。
+ */
+fun Context.canDrawOverlays(): Boolean = Settings.canDrawOverlays(this)
+
+/**
+ * 跳转到系统设置页，引导用户授予"显示在其他应用上层"（悬浮窗）权限。
+ */
+fun Context.openOverlayPermissionSettings() {
+    runCatching {
+        startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION).apply {
+            data = "package:$packageName".toUri()
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        })
+    }.onFailure {
+        Log.e(TAG, "openOverlayPermissionSettings failed", it)
+        // 部分 ROM 不支持应用级入口，退回到全局悬浮窗权限列表
+        runCatching {
+            startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            })
+        }.onFailure { e -> Log.e(TAG, "openOverlayPermissionSettings fallback failed", e) }
+    }
+}
+
+/**
  * 打开一个 url
  */
 fun Context.openUrl(url: String) {

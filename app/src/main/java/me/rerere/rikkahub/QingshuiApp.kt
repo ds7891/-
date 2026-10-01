@@ -48,6 +48,12 @@ import org.koin.core.context.startKoin
 
 private const val TAG = "QingshuiApp"
 
+/**
+ * 启动优化：维护类任务（临时文件清理、技能解压、文件同步、工作区校验）延后一段时间再执行，
+ * 并在同一个 IO 线程上串行跑，避免与首帧渲染、设置/会话读取抢占 CPU 与磁盘 IO。
+ */
+private const val STARTUP_MAINTENANCE_DELAY_MS = 1500L
+
 const val CHAT_COMPLETED_NOTIFICATION_CHANNEL_ID = "chat_completed"
 const val CHAT_LIVE_UPDATE_NOTIFICATION_CHANNEL_ID = "chat_live_update"
 const val WEB_SERVER_NOTIFICATION_CHANNEL_ID = "web_server"
@@ -81,23 +87,8 @@ class QingshuiApp : Application() {
         // install crash handler
         CrashHandler.install(this)
 
-        // delete temp files
-        deleteTempFiles()
-
-        // cleanup stale tool output files
-        cleanupToolOutputs()
-
-        // cleanup workspace temp dirs (proot + rootfs /tmp)
-        cleanupWorkspaceTempDirs()
-
-        // check workspace integrity (mark workspaces with missing files as broken after backup restore)
-        checkWorkspaceIntegrity()
-
-        // sync upload files to DB
-        syncManagedFiles()
-
-        // Extract builtin skills from assets after install/update
-        extractBuiltinSkills()
+        // 清理临时文件、解压内置技能、同步文件、校验工作区等维护任务统一延后串行执行
+        scheduleStartupMaintenance()
 
         // Start WebServer if enabled in settings
         startWebServerIfEnabled()
@@ -119,59 +110,35 @@ class QingshuiApp : Application() {
         }
     }
 
-    private fun cleanupWorkspaceTempDirs() {
+    private fun scheduleStartupMaintenance() {
         get<AppScope>().launch(Dispatchers.IO) {
-            runCatching {
-                get<WorkspaceManager>().cleanupAllTempDirs()
-            }.onFailure {
-                Log.e(TAG, "cleanupWorkspaceTempDirs failed", it)
-            }
+            delay(STARTUP_MAINTENANCE_DELAY_MS)
+            runCatching { get<SkillManager>().ensureBuiltinSkillsExtracted() }
+                .onFailure { Log.e(TAG, "extractBuiltinSkills failed", it) }
+            runCatching { deleteTempFilesNow() }
+                .onFailure { Log.e(TAG, "deleteTempFiles failed", it) }
+            runCatching { cleanupToolOutputsNow() }
+                .onFailure { Log.e(TAG, "cleanupToolOutputs failed", it) }
+            runCatching { get<FilesManager>().syncFolder() }
+                .onFailure { Log.e(TAG, "syncManagedFiles failed", it) }
+            runCatching { get<WorkspaceManager>().cleanupAllTempDirs() }
+                .onFailure { Log.e(TAG, "cleanupWorkspaceTempDirs failed", it) }
+            runCatching { get<WorkspaceRepository>().checkIntegrity() }
+                .onFailure { Log.e(TAG, "checkWorkspaceIntegrity failed", it) }
         }
     }
 
-    private fun checkWorkspaceIntegrity() {
-        get<AppScope>().launch(Dispatchers.IO) {
-            runCatching {
-                get<WorkspaceRepository>().checkIntegrity()
-            }.onFailure {
-                Log.e(TAG, "checkWorkspaceIntegrity failed", it)
-            }
+    private fun deleteTempFilesNow() {
+        val dir = appTempFolder
+        if (dir.exists()) {
+            dir.deleteRecursively()
         }
     }
 
-    private fun deleteTempFiles() {
-        get<AppScope>().launch(Dispatchers.IO) {
-            val dir = appTempFolder
-            if (dir.exists()) {
-                dir.deleteRecursively()
-            }
-        }
-    }
-
-    private fun cleanupToolOutputs() {
-        get<AppScope>().launch(Dispatchers.IO) {
-            runCatching {
-                val dir = File(filesDir, FileFolders.TOOL_OUTPUTS)
-                if (dir.exists()) {
-                    dir.deleteRecursively()
-                }
-            }
-        }
-    }
-
-    private fun extractBuiltinSkills() {
-        get<AppScope>().launch(Dispatchers.IO) {
-            get<SkillManager>().ensureBuiltinSkillsExtracted()
-        }
-    }
-
-    private fun syncManagedFiles() {
-        get<AppScope>().launch(Dispatchers.IO) {
-            runCatching {
-                get<FilesManager>().syncFolder()
-            }.onFailure {
-                Log.e(TAG, "syncManagedFiles failed", it)
-            }
+    private fun cleanupToolOutputsNow() {
+        val dir = File(filesDir, FileFolders.TOOL_OUTPUTS)
+        if (dir.exists()) {
+            dir.deleteRecursively()
         }
     }
 

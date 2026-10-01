@@ -23,6 +23,8 @@ import org.jf.baksmali.BaksmaliOptions
 import org.jf.dexlib2.DexFileFactory
 import org.jf.dexlib2.Opcodes
 import org.jf.dexlib2.iface.ClassDef
+import org.jf.smali.Smali
+import org.jf.smali.SmaliOptions
 import java.io.File
 import java.security.KeyStore
 import java.security.MessageDigest
@@ -37,7 +39,7 @@ import java.util.zip.ZipOutputStream
 const val APK_TOOL = "apk_tool"
 
 /** 会改动磁盘内容的操作，执行前需用户确认。 */
-private val DESTRUCTIVE_ACTIONS = setOf("extract", "replace", "delete", "sign")
+private val DESTRUCTIVE_ACTIONS = setOf("extract", "disasm", "asm", "replace", "delete", "sign")
 
 private const val DEFAULT_LIST_LIMIT = 300
 private const val DEFAULT_READ_BYTES = 512 * 1024
@@ -61,15 +63,21 @@ private const val BUILTIN_KEY_ALIAS = "rikkahub"
 internal fun buildApkTool(context: Context): Tool = Tool(
     name = APK_TOOL,
     description = """
-        对 APK 安装包做基础逆向与改包操作，相当于一个精简的 APK 编辑器 + 签名工具：
+        对 APK 安装包做逆向与改包，相当于一个精简的 APK 编辑器 + 签名工具：
         - info：查看 APK 信息，包含包名、版本号、minSdk/targetSdk、权限、四大组件、入口 Activity、签名信息（证书指纹）等
         - list：列出 APK 内部的所有文件（相当于打开压缩包查看目录）
         - read：读取 APK 内部某个文件的内容；若为二进制 AndroidManifest.xml 会自动还原为可读 XML
-        - smali：把 dex 反编译成 smali。只传 dex 时列出全部类名；再传 class_name 时输出该类的 smali 代码
+        - smali：快速查看 dex 反编译结果。只传 dex 时列出全部类名；再传 class_name 时输出该类的 smali 代码
+        - disasm：把一个 dex 完整反编译到目录，产出可编辑的 smali 工程
+        - asm：把编辑过的 smali 目录回编译成 dex
         - extract：把 APK 内部文件解压到本机目录
         - replace：用本机文件（source）或内联内容（content）替换/新增 APK 内部的某个文件
         - delete：删除 APK 内部的文件（例如旧的 META-INF 签名文件）
         - sign：对 APK 重新签名（默认使用内置测试证书，也可指定自己的 keystore）
+        改代码的完整流程：disasm 把 classes.dex 反编译到 smali 目录 → 用 file_system 编辑目录里的 .smali 文件
+        → asm 把 smali 目录回编译成新 dex → replace 用新 dex 覆盖 APK 里的 classes.dex → sign 重新签名。
+        改资源或配置的流程：extract 整体解包 → 用 file_system 改文件 → replace 写回 → sign。
+        多 dex 的 APK 请对每个 classesN.dex 分别执行 disasm/asm。
         注意：replace/delete 会破坏原签名，改完后必须用 sign 重新签名，产物才能安装。
         path 支持绝对路径、相对路径（相对内部共享存储根目录）与 /sdcard 前缀。
     """.trimIndent().replace("\n", " "),
@@ -88,8 +96,8 @@ internal fun buildApkTool(context: Context): Tool = Tool(
                         "enum",
                         buildJsonArray {
                             listOf(
-                                "info", "list", "read", "smali", "extract",
-                                "replace", "delete", "sign",
+                                "info", "list", "read", "smali", "disasm", "asm",
+                                "extract", "replace", "delete", "sign",
                             ).forEach { add(it) }
                         }
                     )
@@ -110,7 +118,11 @@ internal fun buildApkTool(context: Context): Tool = Tool(
                 })
                 put("dex", buildJsonObject {
                     put("type", "string")
-                    put("description", "smali 时指定要反编译的 dex 条目，默认 classes.dex。")
+                    put("description", "smali/disasm 时指定要处理的 dex 条目，默认 classes.dex。")
+                })
+                put("smali_dir", buildJsonObject {
+                    put("type", "string")
+                    put("description", "asm 时要回编译的 smali 目录（disasm 的输出目录）。")
                 })
                 put("class_name", buildJsonObject {
                     put("type", "string")
@@ -130,7 +142,7 @@ internal fun buildApkTool(context: Context): Tool = Tool(
                 })
                 put("output", buildJsonObject {
                     put("type", "string")
-                    put("description", "输出路径：replace/delete/sign 输出新的 APK 文件；extract 输出目录（默认在 APK 同目录下按需生成）。")
+                    put("description", "输出路径：replace/delete/sign 输出新的 APK 文件；extract 输出目录；disasm 输出 smali 目录；asm 输出 dex 文件。默认在 APK 同目录下自动生成。")
                 })
                 put("pattern", buildJsonObject {
                     put("type", "string")
@@ -185,6 +197,8 @@ private fun runApkAction(context: Context, params: JsonObject): String {
         "list" -> actionList(params)
         "read" -> actionRead(params)
         "smali" -> actionSmali(params)
+        "disasm" -> actionDisasm(params)
+        "asm" -> actionAsm(params)
         "extract" -> actionExtract(params)
         "replace" -> actionReplace(params)
         "delete" -> actionDelete(params)
@@ -352,6 +366,99 @@ private fun actionSmali(params: JsonObject): String {
     }
 }
 
+/** 把一个 dex 完整反编译到本机目录，产出可继续编辑的 smali 工程。 */
+private fun actionDisasm(params: JsonObject): String {
+    val apk = requireApk(params) ?: return errorJson("MISSING_PATH", "path is required")
+    if (!apk.isFile) return errorJson("NOT_FOUND", "APK 不存在：${apk.absolutePath}")
+    val dexName = params.stringOrNull("dex")?.trim()?.takeIf { it.isNotBlank() } ?: "classes.dex"
+    val baseName = dexName.substringAfterLast('/').removeSuffix(".dex")
+    val outDir = params.stringOrNull("output")?.takeIf { it.isNotBlank() }?.let { resolvePath(it) }
+        ?: File(apk.parentFile ?: File("."), "${apk.nameWithoutExtension}.$baseName.smali")
+    if (outDir.exists() && !outDir.isDirectory) {
+        return errorJson("OUTPUT_INVALID", "输出路径已存在且不是目录：${outDir.absolutePath}")
+    }
+    // 目录里若有上次遗留的 smali，会被一起回编译成重复类导致 asm 失败，这里直接拒绝
+    if (outDir.list()?.isNotEmpty() == true) {
+        return errorJson("OUTPUT_NOT_EMPTY", "输出目录非空，请先删除或换一个 output：${outDir.absolutePath}")
+    }
+    if (!outDir.exists() && !outDir.mkdirs()) {
+        return errorJson("MKDIR_FAILED", "无法创建输出目录：${outDir.absolutePath}")
+    }
+
+    val workDir = File(outDir.parentFile ?: File("."), ".apk_tool_tmp_${System.currentTimeMillis()}")
+    if (!workDir.mkdirs()) return errorJson("TMP_FAILED", "无法创建临时目录：${workDir.absolutePath}")
+    return try {
+        val dexFile = File(workDir, "${baseName}.dex")
+        ZipFile(apk).use { zip ->
+            val entry = zip.getEntry(dexName)
+                ?: return errorJson("ENTRY_NOT_FOUND", "APK 内不存在 dex：$dexName")
+            zip.getInputStream(entry).use { input -> dexFile.outputStream().use { input.copyTo(it) } }
+        }
+
+        val opcodes = Opcodes.forApi(DEX_API_LEVEL)
+        val dex = DexFileFactory.loadDexFile(dexFile, opcodes)
+        val options = BaksmaliOptions().apply { apiLevel = opcodes.api }
+        Baksmali.disassembleDexFile(dex, outDir, 1, options)
+
+        val fileCount = outDir.walkTopDown().count { it.extension == "smali" }
+        buildJsonObject {
+            put("success", true)
+            put("path", apk.absolutePath)
+            put("dex", dexName)
+            put("output", outDir.absolutePath)
+            put("class_count", dex.classes.count())
+            put("file_count", fileCount)
+            put(
+                "next",
+                "用 file_system 编辑该目录下的 .smali 文件后，调用 action=asm 回编译成 dex，" +
+                    "再用 action=replace 覆盖 APK 里的 $dexName，最后 action=sign 重新签名。",
+            )
+        }.toString()
+    } finally {
+        workDir.deleteRecursively()
+    }
+}
+
+/** 把编辑过的 smali 目录回编译成 dex。 */
+private fun actionAsm(params: JsonObject): String {
+    val smaliDir = resolvePath(params.stringOrNull("smali_dir"))
+        ?: return errorJson("MISSING_SMALI_DIR", "smali_dir is required")
+    if (!smaliDir.isDirectory) return errorJson("NOT_FOUND", "smali 目录不存在：${smaliDir.absolutePath}")
+    if (smaliDir.walkTopDown().none { it.extension == "smali" }) {
+        return errorJson("EMPTY_SMALI_DIR", "目录下没有 .smali 文件：${smaliDir.absolutePath}")
+    }
+
+    val outDex = params.stringOrNull("output")?.takeIf { it.isNotBlank() }?.let { resolvePath(it) }
+        ?: File(smaliDir.parentFile ?: File("."), smaliDir.name + ".dex")
+    outDex.parentFile?.mkdirs()
+    if (outDex.isDirectory) return errorJson("OUTPUT_INVALID", "输出路径是目录，请指定 .dex 文件名：${outDex.absolutePath}")
+    if (outDex.exists() && !outDex.delete()) {
+        return errorJson("OUTPUT_LOCKED", "无法覆盖已存在的输出文件：${outDex.absolutePath}")
+    }
+
+    val options = SmaliOptions().apply {
+        apiLevel = DEX_API_LEVEL
+        jobs = 1
+        outputDexFile = outDex.absolutePath
+    }
+    val ok = runCatching { Smali.assemble(options, listOf(smaliDir.absolutePath)) }
+        .getOrElse { return errorJson("ASM_FAILED", "回编译失败：${it.message ?: it::class.simpleName}") }
+    if (!ok || !outDex.isFile) {
+        return errorJson("ASM_FAILED", "回编译失败，未生成 dex，请检查 smali 语法是否正确。")
+    }
+
+    return buildJsonObject {
+        put("success", true)
+        put("smali_dir", smaliDir.absolutePath)
+        put("output", outDex.absolutePath)
+        put("size", outDex.length())
+        put(
+            "next",
+            "用 action=replace 把该 dex 写回 APK（entry 填对应的 dex 条目名），再用 action=sign 重新签名。",
+        )
+    }.toString()
+}
+
 /** 把 APK 内部条目解压到本机目录。 */
 private fun actionExtract(params: JsonObject): String {
     val apk = requireApk(params) ?: return errorJson("MISSING_PATH", "path is required")
@@ -514,13 +621,25 @@ private fun rewriteApk(input: File, output: File, delete: Set<String> = emptySet
             zip.entries().toList().forEach { entry ->
                 if (entry.isDirectory) return@forEach
                 if (entry.name in delete || entry.name in replaced) return@forEach
-                out.putNextEntry(ZipEntry(entry.name))
-                zip.getInputStream(entry).use { it.copyTo(out) }
-                out.closeEntry()
+                copyEntry(zip, entry, out)
             }
             replace.forEach { (name, bytes) -> writeEntry(out, name, bytes) }
         }
     }
+}
+
+/** 照抄条目时保留原来的压缩方式，避免 resources.arsc 等本应未压缩的条目被重新压缩。 */
+private fun copyEntry(zip: ZipFile, entry: ZipEntry, out: ZipOutputStream) {
+    val copy = ZipEntry(entry.name)
+    if (entry.method == ZipEntry.STORED) {
+        copy.method = ZipEntry.STORED
+        copy.size = entry.size
+        copy.compressedSize = entry.size
+        copy.crc = entry.crc
+    }
+    out.putNextEntry(copy)
+    zip.getInputStream(entry).use { it.copyTo(out) }
+    out.closeEntry()
 }
 
 private fun writeEntry(out: ZipOutputStream, name: String, bytes: ByteArray) {

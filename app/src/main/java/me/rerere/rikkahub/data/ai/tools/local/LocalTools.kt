@@ -32,7 +32,12 @@ class LocalTools(
 
     val apkTool by lazy { buildApkTool(context) }
 
-    fun getTools(options: List<LocalToolOption>): List<Tool> {
+    val mediaTool by lazy { buildMediaTool(context) }
+
+    fun getTools(
+        options: List<LocalToolOption>,
+        httpAllowedDomains: List<String> = emptyList(),
+    ): List<Tool> {
         val tools = mutableListOf<Tool>()
         if (options.contains(LocalToolOption.JavascriptEngine)) {
             tools.add(javascriptTool)
@@ -61,6 +66,12 @@ class LocalTools(
         }
         if (options.contains(LocalToolOption.Apk)) {
             tools.add(apkTool)
+        }
+        if (options.contains(LocalToolOption.Media)) {
+            tools.add(mediaTool)
+        }
+        if (options.contains(LocalToolOption.Http)) {
+            tools.add(buildHttpTool(httpAllowedDomains))
         }
         return tools
     }

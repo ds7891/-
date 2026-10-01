@@ -6,17 +6,22 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.LargeFlexibleTopAppBar
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
@@ -135,7 +140,7 @@ private fun AssistantLocalToolContent(
             calendarPermissionState.requestPermissions()
             return
         }
-        if (enabled && (option == LocalToolOption.FileSystem || option == LocalToolOption.Apk) && !context.hasAllFilesAccess()) {
+        if (enabled && (option == LocalToolOption.FileSystem || option == LocalToolOption.Apk || option == LocalToolOption.Media) && !context.hasAllFilesAccess()) {
             // Android 11+ 需跳转系统"所有文件访问权限"页；Android 11 以下直接弹运行时权限
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 toaster.show(message = fileSystemPermissionRequiredText, type = ToastType.Warning)
@@ -287,6 +292,69 @@ private fun AssistantLocalToolContent(
                         onCheckedChange = { toggleLocalTool(LocalToolOption.Apk, it) }
                     )
                 }
+            )
+            item(
+                headlineContent = {
+                    Text(stringResource(R.string.assistant_page_local_tools_media_title))
+                },
+                supportingContent = {
+                    Text(stringResource(R.string.assistant_page_local_tools_media_desc))
+                },
+                trailingContent = {
+                    Switch(
+                        checked = assistant.localTools.contains(LocalToolOption.Media),
+                        onCheckedChange = { toggleLocalTool(LocalToolOption.Media, it) }
+                    )
+                }
+            )
+        }
+
+        // 网络请求工具：开关 + 域名白名单
+        var domainsText by remember(assistant.id) {
+            mutableStateOf(assistant.httpAllowedDomains.joinToString("\n"))
+        }
+        CardGroup(
+            title = { Text(stringResource(R.string.assistant_page_local_tools_http_title)) }
+        ) {
+            item(
+                headlineContent = {
+                    Text(stringResource(R.string.assistant_page_local_tools_http_title))
+                },
+                supportingContent = {
+                    Text(stringResource(R.string.assistant_page_local_tools_http_desc))
+                },
+                trailingContent = {
+                    Switch(
+                        checked = assistant.localTools.contains(LocalToolOption.Http),
+                        onCheckedChange = { toggleLocalTool(LocalToolOption.Http, it) }
+                    )
+                }
+            )
+            item(
+                headlineContent = {
+                    Text(stringResource(R.string.assistant_page_local_tools_http_domains_title))
+                },
+                supportingContent = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(stringResource(R.string.assistant_page_local_tools_http_domains_desc))
+                        OutlinedTextField(
+                            value = domainsText,
+                            onValueChange = { text ->
+                                domainsText = text
+                                val domains = text
+                                    .split('\n', ',', ' ', '\t', ';')
+                                    .map { it.trim() }
+                                    .filter { it.isNotEmpty() }
+                                    .distinct()
+                                onUpdate(assistant.copy(httpAllowedDomains = domains))
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            placeholder = { Text("api.openai.com\n*.example.com") },
+                            minLines = 2,
+                            maxLines = 6,
+                        )
+                    }
+                },
             )
         }
     }

@@ -101,6 +101,9 @@ import me.rerere.rikkahub.ui.pages.favorite.FavoritePage
 import me.rerere.rikkahub.ui.pages.history.HistoryPage
 import me.rerere.rikkahub.ui.pages.imggen.ImageGenPage
 import me.rerere.rikkahub.ui.pages.log.LogPage
+import me.rerere.rikkahub.ui.pages.media.ImageEditorPage
+import me.rerere.rikkahub.ui.pages.media.MediaBrowserPage
+import me.rerere.rikkahub.ui.pages.media.VideoPlayerPage
 import me.rerere.rikkahub.ui.pages.search.SearchPage
 import me.rerere.rikkahub.ui.pages.setting.SettingAboutPage
 import me.rerere.rikkahub.ui.pages.setting.SettingPreferencesPage
@@ -534,6 +537,18 @@ class RouteActivity : ComponentActivity() {
                             entry<Screen.Stats> {
                                 StatsPage()
                             }
+
+                            entry<Screen.MediaBrowser> {
+                                MediaBrowserPage()
+                            }
+
+                            entry<Screen.ImageEditor> { key ->
+                                ImageEditorPage(key.path)
+                            }
+
+                            entry<Screen.VideoPlayer> { key ->
+                                VideoPlayerPage(key.path)
+                            }
                         }
                     )
                     if (BuildConfig.DEBUG) {
@@ -739,4 +754,13 @@ sealed interface Screen : NavKey {
 
     @Serializable
     data object Stats : Screen
+
+    @Serializable
+    data object MediaBrowser : Screen
+
+    @Serializable
+    data class ImageEditor(val path: String) : Screen
+
+    @Serializable
+    data class VideoPlayer(val path: String) : Screen
 }

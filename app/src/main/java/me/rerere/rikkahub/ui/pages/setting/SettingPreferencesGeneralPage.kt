@@ -23,6 +23,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -34,6 +35,8 @@ import me.rerere.rikkahub.ui.components.ui.CardGroup
 import me.rerere.rikkahub.ui.components.ui.Select
 import me.rerere.rikkahub.ui.hooks.rememberSharedPreferenceBoolean
 import me.rerere.rikkahub.ui.theme.CustomColors
+import me.rerere.rikkahub.utils.canDrawOverlays
+import me.rerere.rikkahub.utils.openOverlayPermissionSettings
 import me.rerere.rikkahub.utils.plus
 import org.koin.androidx.compose.koinViewModel
 import kotlin.math.roundToInt
@@ -41,6 +44,7 @@ import kotlin.math.roundToInt
 @Composable
 fun SettingPreferencesGeneralPage(vm: SettingVM = koinViewModel()) {
     val settings by vm.settings.collectAsStateWithLifecycle()
+    val context = LocalContext.current
     var displaySetting by remember(settings) { mutableStateOf(settings.displaySetting) }
     var ttsPlaybackSpeed by remember(settings.defaultTTSPlaybackSpeed) {
         mutableFloatStateOf(settings.defaultTTSPlaybackSpeed)
@@ -130,6 +134,24 @@ fun SettingPreferencesGeneralPage(vm: SettingVM = koinViewModel()) {
                             },
                         )
                     }
+                    item(
+                        headlineContent = { Text(stringResource(R.string.setting_display_page_floating_window_title)) },
+                        supportingContent = { Text(stringResource(R.string.setting_display_page_floating_window_desc)) },
+                        trailingContent = {
+                            Switch(
+                                checked = displaySetting.enableFloatingWindow,
+                                onCheckedChange = { enabled ->
+                                    updateDisplaySetting(
+                                        displaySetting.copy(enableFloatingWindow = enabled)
+                                    )
+                                    // 开启时若还没有"显示在其他应用上层"权限，直接跳到系统设置去授权
+                                    if (enabled && !context.canDrawOverlays()) {
+                                        context.openOverlayPermissionSettings()
+                                    }
+                                }
+                            )
+                        },
+                    )
                     item(
                         headlineContent = { Text(stringResource(R.string.setting_display_page_enable_auto_scroll_title)) },
                         supportingContent = { Text(stringResource(R.string.setting_display_page_enable_auto_scroll_desc)) },

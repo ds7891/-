@@ -7,6 +7,7 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import android.provider.Settings
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
@@ -16,6 +17,7 @@ import me.rerere.rikkahub.AppScope
 import me.rerere.rikkahub.CHAT_LIVE_UPDATE_NOTIFICATION_CHANNEL_ID
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.RouteActivity
+import me.rerere.rikkahub.data.datastore.SettingsStore
 import org.koin.android.ext.android.inject
 import kotlin.uuid.Uuid
 
@@ -67,6 +69,10 @@ class ChatGenerationForegroundService : Service() {
     private var isForeground = false
     private val appScope: AppScope by inject()
     private val chatService: ChatService by inject()
+    private val settingsStore: SettingsStore by inject()
+
+    // 悬浮窗保活气泡，按需创建，未开启时不会建立 WindowManager 覆盖层
+    private var floatingBubble: FloatingBubbleController? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -81,6 +87,7 @@ class ChatGenerationForegroundService : Service() {
 
     override fun onDestroy() {
         activeGenerations.clear()
+        hideFloatingBubble()
         if (isForeground) {
             stopForeground(STOP_FOREGROUND_REMOVE)
             isForeground = false
@@ -107,15 +114,38 @@ class ChatGenerationForegroundService : Service() {
         val conversationId = intent.getStringExtra(EXTRA_CONVERSATION_ID) ?: return stopService()
         activeGenerations[generationId] = conversationId
         updateForegroundNotification(conversationId)
+        // AI 开始输出时，按设置显示"清水正在运行中"悬浮窗
+        if (isForeground) {
+            showFloatingBubbleIfEnabled()
+        }
     }
 
     private fun release(intent: Intent) {
         intent.getStringExtra(EXTRA_GENERATION_ID)?.let(activeGenerations::remove)
         if (activeGenerations.isEmpty()) {
+            hideFloatingBubble()
             stopService()
         } else {
             updateForegroundNotification(activeGenerations.values.last())
         }
+    }
+
+    /** 开启"悬浮窗保活"且已获得悬浮窗权限时，显示运行中的气泡。 */
+    private fun showFloatingBubbleIfEnabled() {
+        val enabled = settingsStore.settingsFlow.value.displaySetting.enableFloatingWindow
+        if (!enabled) return
+        if (!Settings.canDrawOverlays(this)) {
+            Log.w(TAG, "floating window enabled but overlay permission is missing")
+            return
+        }
+        val controller = floatingBubble
+            ?: FloatingBubbleController(applicationContext).also { floatingBubble = it }
+        controller.show()
+    }
+
+    private fun hideFloatingBubble() {
+        floatingBubble?.hide()
+        floatingBubble = null
     }
 
     private fun updateForegroundNotification(conversationId: String) {

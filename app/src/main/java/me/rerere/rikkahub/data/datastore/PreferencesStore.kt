@@ -16,8 +16,10 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStoreFile
 import io.pebbletemplates.pebble.PebbleEngine
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.retryWhen
@@ -100,6 +102,35 @@ private fun createSettingsDataStore(context: Context): DataStore<Preferences> {
         produceFile = { file },
     )
 }
+
+/**
+ * 设置项 JSON 解码缓存。
+ *
+ * DataStore 每次发射都会把整份设置从 Preferences 重新组装一遍，其中 providers / assistants /
+ * mcpServers 等大对象需要反复反序列化；按「字段名 + 原始字符串」缓存解码结果，
+ * 可以把重复解析的 CPU 开销省掉（启动与每次改设置时都能受益）。
+ */
+private object SettingsJsonCache {
+    private const val MAX_ENTRIES = 32
+
+    private val entries = object : LinkedHashMap<String, Any>(16, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Any>?): Boolean =
+            size > MAX_ENTRIES
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    fun <T : Any> getOrDecode(field: String, raw: String, decode: (String) -> T): T {
+        val key = "$field\u0000$raw"
+        synchronized(entries) {
+            entries[key]?.let { return it as T }
+            return decode(raw).also { entries[key] = it }
+        }
+    }
+}
+
+/** 读取可持续沿用的原始字符串时优先命中解码缓存，为 null 时返回 null。 */
+private fun <T : Any> String?.decodeCached(field: String, decode: (String) -> T): T? =
+    this?.let { SettingsJsonCache.getOrDecode(field, it, decode) }
 
 class SettingsStore(
     context: Context,
@@ -274,7 +305,7 @@ class SettingsStore(
             shouldRetry
         }.map { preferences ->
             Settings(
-                favoriteModels = preferences[FAVORITE_MODELS]?.let {
+                favoriteModels = preferences[FAVORITE_MODELS].decodeCached("favorite_models") {
                     JsonInstant.decodeFromString(it)
                 } ?: emptyList(),
                 chatModelId = preferences[SELECT_MODEL]?.let { Uuid.parse(it) }
@@ -298,56 +329,64 @@ class SettingsStore(
                 compressPrompt = preferences[COMPRESS_PROMPT] ?: DEFAULT_COMPRESS_PROMPT,
                 assistantId = preferences[SELECT_ASSISTANT]?.let { Uuid.parse(it) }
                     ?: DEFAULT_ASSISTANT_ID,
-                assistantTags = preferences[ASSISTANT_TAGS]?.let {
+                assistantTags = preferences[ASSISTANT_TAGS].decodeCached("assistant_tags") {
                     JsonInstant.decodeFromString(it)
                 } ?: emptyList(),
-                providers = JsonInstant.decodeFromString(preferences[PROVIDERS] ?: "[]"),
-                assistants = JsonInstant.decodeFromString(preferences[ASSISTANTS] ?: "[]"),
+                providers = preferences[PROVIDERS].decodeCached("providers") {
+                    JsonInstant.decodeFromString(it)
+                } ?: emptyList(),
+                assistants = preferences[ASSISTANTS].decodeCached("assistants") {
+                    JsonInstant.decodeFromString(it)
+                } ?: emptyList(),
                 dynamicColor = preferences[DYNAMIC_COLOR] != false,
                 themeId = preferences[THEME_ID] ?: PresetThemes[0].id,
-                customThemes = preferences[CUSTOM_THEMES]?.let {
+                customThemes = preferences[CUSTOM_THEMES].decodeCached("custom_themes") {
                     JsonInstant.decodeFromString(it)
                 } ?: emptyList(),
                 developerMode = preferences[DEVELOPER_MODE] == true,
-                displaySetting = JsonInstant.decodeFromString(preferences[DISPLAY_SETTING] ?: "{}"),
-                networkSetting = JsonInstant.decodeFromString(preferences[NETWORK_SETTING] ?: "{}"),
-                searchServices = preferences[SEARCH_SERVICES]?.let {
+                displaySetting = preferences[DISPLAY_SETTING].decodeCached("display_setting") {
+                    JsonInstant.decodeFromString(it)
+                } ?: DisplaySetting(),
+                networkSetting = preferences[NETWORK_SETTING].decodeCached("network_setting") {
+                    JsonInstant.decodeFromString(it)
+                } ?: NetworkSetting(),
+                searchServices = preferences[SEARCH_SERVICES].decodeCached("search_services") {
                     JsonInstant.decodeFromString(it)
                 } ?: listOf(SearchServiceOptions.DEFAULT),
-                searchCommonOptions = preferences[SEARCH_COMMON]?.let {
+                searchCommonOptions = preferences[SEARCH_COMMON].decodeCached("search_common") {
                     JsonInstant.decodeFromString(it)
                 } ?: SearchCommonOptions(),
                 searchServiceSelected = preferences[SEARCH_SELECTED] ?: 0,
-                mcpServers = preferences[MCP_SERVERS]?.let {
+                mcpServers = preferences[MCP_SERVERS].decodeCached("mcp_servers") {
                     JsonInstant.decodeFromString(it)
                 } ?: emptyList(),
-                subAgents = preferences[SUB_AGENTS]?.let {
+                subAgents = preferences[SUB_AGENTS].decodeCached("sub_agents") {
                     JsonInstant.decodeFromString(it)
                 } ?: DEFAULT_SUB_AGENTS,
                 enableSubAgents = preferences[ENABLE_SUB_AGENTS] != false,
-                webDavConfig = preferences[WEBDAV_CONFIG]?.let {
+                webDavConfig = preferences[WEBDAV_CONFIG].decodeCached("webdav_config") {
                     JsonInstant.decodeFromString(it)
                 } ?: WebDavConfig(),
-                s3Config = preferences[S3_CONFIG]?.let {
+                s3Config = preferences[S3_CONFIG].decodeCached("s3_config") {
                     JsonInstant.decodeFromString(it)
                 } ?: S3Config(),
-                ttsProviders = preferences[TTS_PROVIDERS]?.let {
+                ttsProviders = preferences[TTS_PROVIDERS].decodeCached("tts_providers") {
                     JsonInstant.decodeFromString(it)
                 } ?: emptyList(),
                 selectedTTSProviderId = preferences[SELECTED_TTS_PROVIDER]?.let { Uuid.parse(it) }
                     ?: DEFAULT_SYSTEM_TTS_ID,
                 defaultTTSPlaybackSpeed = preferences[DEFAULT_TTS_PLAYBACK_SPEED]?.coerceIn(0.5f, 2.0f) ?: 1.0f,
-                asrProviders = preferences[ASR_PROVIDERS]?.let {
+                asrProviders = preferences[ASR_PROVIDERS].decodeCached("asr_providers") {
                     JsonInstant.decodeFromString(it)
                 } ?: emptyList(),
                 selectedASRProviderId = preferences[SELECTED_ASR_PROVIDER]?.let { Uuid.parse(it) },
-                modeInjections = preferences[MODE_INJECTIONS]?.let {
+                modeInjections = preferences[MODE_INJECTIONS].decodeCached("mode_injections") {
                     JsonInstant.decodeFromString(it)
                 } ?: emptyList(),
-                lorebooks = preferences[LOREBOOKS]?.let {
+                lorebooks = preferences[LOREBOOKS].decodeCached("lorebooks") {
                     JsonInstant.decodeFromString(it)
                 } ?: emptyList(),
-                quickMessages = preferences[QUICK_MESSAGES]?.let {
+                quickMessages = preferences[QUICK_MESSAGES].decodeCached("quick_messages") {
                     JsonInstant.decodeFromString(it)
                 } ?: emptyList(),
                 webServerEnabled = preferences[WEB_SERVER_ENABLED] == true,
@@ -355,7 +394,7 @@ class SettingsStore(
                 webServerJwtEnabled = preferences[WEB_SERVER_JWT_ENABLED] == true,
                 webServerAccessPassword = preferences[WEB_SERVER_ACCESS_PASSWORD] ?: "",
                 webServerLocalhostOnly = preferences[WEB_SERVER_LOCALHOST_ONLY] == true,
-                backupReminderConfig = preferences[BACKUP_REMINDER_CONFIG]?.let {
+                backupReminderConfig = preferences[BACKUP_REMINDER_CONFIG].decodeCached("backup_reminder_config") {
                     JsonInstant.decodeFromString(it)
                 } ?: BackupReminderConfig(),
                 launchCount = preferences[LAUNCH_COUNT] ?: 0,
@@ -457,6 +496,8 @@ class SettingsStore(
         .onEach {
             get<PebbleEngine>().templateCache.invalidateAll()
         }
+        // 启动优化：整份设置的组装与 JSON 反序列化放到后台线程，避免阻塞主线程（首次发射尤其明显）
+        .flowOn(Dispatchers.Default)
 
     val settingsFlow = settingsFlowRaw
         .distinctUntilChanged()
@@ -679,6 +720,8 @@ data class DisplaySetting(
     val updateCheckDisabledUntilEpochMillis: Long = 0L,
     val showMessageJumper: Boolean = true,
     val messageJumperOnLeft: Boolean = false,
+    // 悬浮窗保活：AI 生成期间在屏幕上显示"清水正在运行中"气泡，避免后台被杀
+    val enableFloatingWindow: Boolean = false,
     val fontSizeRatio: Float = 1.0f,
     val enableMessageGenerationHapticEffect: Boolean = false,
     val skipCropImage: Boolean = true,

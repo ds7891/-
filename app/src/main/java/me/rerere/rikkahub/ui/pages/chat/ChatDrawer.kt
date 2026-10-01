@@ -68,6 +68,7 @@ import me.rerere.hugeicons.stroke.Search01
 import me.rerere.hugeicons.stroke.Settings03
 import me.rerere.hugeicons.stroke.Sparkles
 import me.rerere.hugeicons.stroke.TransactionHistory
+import me.rerere.hugeicons.stroke.Video01
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.Screen
 import me.rerere.rikkahub.data.datastore.Settings
@@ -376,6 +377,14 @@ fun ChatDrawerContent(
                             onClick = {
                                 showMenuPopup = false
                                 navController.navigate(Screen.ImageGen)
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.media_browser_menu)) },
+                            leadingIcon = { Icon(HugeIcons.Video01, null) },
+                            onClick = {
+                                showMenuPopup = false
+                                navController.navigate(Screen.MediaBrowser)
                             }
                         )
                     }
