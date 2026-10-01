@@ -248,7 +248,7 @@ private fun isHostAllowed(url: HttpUrl, allowedDomains: List<String>): Boolean {
     }
 }
 
-/** 只有明确是文本类（text/*、JSON、XML、JS、表单）时才按文本返回，其余按二进制处理。 */
+/** 只有明确是文本类（text 系列、JSON、XML、JS、表单）时才按文本返回，其余按二进制处理。 */
 private fun looksLikeText(contentType: String?): Boolean {
     val type = contentType?.lowercase() ?: return true
     return type.startsWith("text/") ||

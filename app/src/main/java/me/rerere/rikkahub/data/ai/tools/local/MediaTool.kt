@@ -383,12 +383,12 @@ private fun actionVideoInfo(params: JsonObject): String {
         buildJsonObject {
             put("path", file.absolutePath)
             put("size", file.length())
-            put("duration_ms", retriever.metadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: -1L)
-            put("width", retriever.metadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: -1)
-            put("height", retriever.metadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: -1)
-            put("rotation", retriever.metadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toIntOrNull() ?: 0)
-            put("bitrate", retriever.metadata(MediaMetadataRetriever.METADATA_KEY_BITRATE)?.toLongOrNull() ?: -1L)
-            put("mime", retriever.metadata(MediaMetadataRetriever.METADATA_KEY_MIMETYPE) ?: "")
+            put("duration_ms", retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: -1L)
+            put("width", retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: -1)
+            put("height", retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: -1)
+            put("rotation", retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toIntOrNull() ?: 0)
+            put("bitrate", retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_BITRATE)?.toLongOrNull() ?: -1L)
+            put("mime", retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_MIMETYPE) ?: "")
         }.toString()
     } catch (error: Throwable) {
         mediaErrorJson("READ_FAILED", "无法读取视频信息：${error.message ?: error::class.simpleName}")
@@ -412,7 +412,7 @@ private fun actionVideoFrames(params: JsonObject): List<UIMessagePart> {
     val parts = mutableListOf<UIMessagePart>()
     try {
         retriever.setDataSource(file.absolutePath)
-        val durationMs = retriever.metadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
+        val durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
         val explicit = params.mediaDoubleArray("timestamps")
         val timestampsSeconds = explicit.ifEmpty {
             val count = (params.mediaInt("count") ?: MEDIA_DEFAULT_FRAME_COUNT).coerceIn(1, MEDIA_MAX_FRAME_COUNT)
