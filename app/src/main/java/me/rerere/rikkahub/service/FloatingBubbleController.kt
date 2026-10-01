@@ -26,7 +26,7 @@ private const val SNAP_DELAY_MS = 3000L
 private const val SNAP_ANIM_DURATION_MS = 260L
 
 /**
- * 悬浮窗保活气泡：AI 生成期间在屏幕上显示一个椭圆形的"清水正在运行中"，用于提示进程仍在工作。
+ * 悬浮窗保活气泡：AI 生成期间在屏幕上显示一个胶囊形的"清水正在运行中"，用于提示进程仍在工作。
  *
  * - 可自由拖动；
  * - 3 秒无操作后自动贴到最近的屏幕左/右边缘，并缩进去约 1/3（只露出 2/3）；
@@ -79,20 +79,27 @@ class FloatingBubbleController(private val context: Context) {
 
     private fun createBubbleView(): TextView {
         val density = context.resources.displayMetrics.density
-        val paddingH = (18 * density).roundToInt()
-        val paddingV = (9 * density).roundToInt()
-        return TextView(context).apply {
+        val paddingH = (10 * density).roundToInt()
+        val paddingV = (4 * density).roundToInt()
+        val view = TextView(context).apply {
             text = context.getString(R.string.floating_window_running_text)
-            textSize = 13f
+            textSize = 11f
             setTextColor(0xFF1B4332.toInt())
             gravity = Gravity.CENTER
             setPadding(paddingH, paddingV, paddingH, paddingV)
-            background = GradientDrawable().apply {
-                shape = GradientDrawable.OVAL
-                setColor(0xFFD8F3DC.toInt())
-                setStroke((1.5f * density).roundToInt(), 0xFF74C69D.toInt())
-            }
         }
+        // 先量出实际高度，再按高度的一半做圆角：长方形 + 左右两个半圆（胶囊形）
+        view.measure(
+            View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED),
+            View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED),
+        )
+        view.background = GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            setColor(0xFFD8F3DC.toInt())
+            setStroke((1f * density).roundToInt(), 0xFF74C69D.toInt())
+            cornerRadius = view.measuredHeight / 2f
+        }
+        return view
     }
 
     private fun createLayoutParams(view: View): WindowManager.LayoutParams {
