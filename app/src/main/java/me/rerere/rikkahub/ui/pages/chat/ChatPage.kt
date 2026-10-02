@@ -3,6 +3,7 @@ package me.rerere.rikkahub.ui.pages.chat
 import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.lazy.LazyListState
@@ -62,6 +63,7 @@ import me.rerere.hugeicons.stroke.Menu03
 import me.rerere.hugeicons.stroke.MessageAdd01
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.ai.CapabilityApprovalStore
+import me.rerere.rikkahub.data.ai.CapabilityDecision
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.findProvider
 import me.rerere.rikkahub.data.datastore.getCurrentAssistant
@@ -546,23 +548,51 @@ private fun ChatPageContent(
                 text = {
                     Text(
                         buildString {
-                            appendLine("子智能体「${request.agentName}」申请使用以下高权限工具：")
+                            appendLine("子智能体「${request.agentName}」申请使用以下工具：")
                             request.tools.forEach { appendLine("· $it") }
                             if (request.reason.isNotBlank()) {
                                 appendLine()
                                 appendLine("理由：${request.reason}")
                             }
+                            appendLine()
+                            appendLine("同意后将直接开通，无需主智能体再次确认。")
+                            appendLine("先点「下一次默认同意」再点「同意」，会在你下一条消息之前默认放行后续所有申请。")
                         }.trim()
                     )
                 },
                 confirmButton = {
-                    TextButton(onClick = { approvalStore.resolve(request.id, true) }) {
-                        Text("允许")
-                    }
-                },
-                dismissButton = {
-                    TextButton(onClick = { approvalStore.resolve(request.id, false) }) {
-                        Text("拒绝")
+                    // 「下一次默认同意」先选中，再点「同意」才生效，避免误触导致整轮放行。
+                    var armAlwaysApprove by remember(request.id) { mutableStateOf(false) }
+                    Row {
+                        TextButton(onClick = { armAlwaysApprove = !armAlwaysApprove }) {
+                            Text(
+                                text = if (armAlwaysApprove) "✓ 下一次默认同意" else "下一次默认同意",
+                                color = if (armAlwaysApprove) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                },
+                            )
+                        }
+                        TextButton(
+                            onClick = {
+                                approvalStore.resolve(
+                                    request.id,
+                                    if (armAlwaysApprove) {
+                                        CapabilityDecision.ALWAYS_APPROVE
+                                    } else {
+                                        CapabilityDecision.APPROVE
+                                    },
+                                )
+                            }
+                        ) {
+                            Text("同意")
+                        }
+                        TextButton(
+                            onClick = { approvalStore.resolve(request.id, CapabilityDecision.REJECT) }
+                        ) {
+                            Text("拒绝")
+                        }
                     }
                 },
             )

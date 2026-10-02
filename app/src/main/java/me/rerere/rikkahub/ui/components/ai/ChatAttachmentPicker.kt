@@ -18,6 +18,7 @@ import me.rerere.ai.ui.UIMessagePart
 import me.rerere.common.android.appTempFolder
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.datastore.Settings
+import me.rerere.rikkahub.data.files.FileUtils
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.ui.components.ui.permission.PermissionCamera
 import me.rerere.rikkahub.ui.components.ui.permission.PermissionManager
@@ -159,7 +160,12 @@ internal fun rememberChatAttachmentPickerActions(
             if (uris.isNotEmpty()) {
                 val documents = uris.mapNotNull { uri ->
                     val fileName = filesManager.getFileNameFromUri(uri) ?: "file"
-                    val mime = filesManager.getFileMimeType(uri) ?: "text/plain"
+                    // 媒体库常对 APK / 压缩包返回 null 或 octet-stream，这里按后缀补一个准确 MIME，
+                    // 否则会退化成 text/plain 而被当作文本读取
+                    val mime = filesManager.getFileMimeType(uri)
+                        ?.takeIf { it.isNotBlank() && it != "application/octet-stream" }
+                        ?: FileUtils.mimeFromFileName(fileName)
+                        ?: "application/octet-stream"
                     if (isAllowedFileType(fileName, mime)) {
                         val localUri = filesManager.createChatFilesByContents(listOf(uri)).firstOrNull()
                             ?: run {

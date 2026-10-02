@@ -959,8 +959,14 @@
   <string name="setting_sub_agent_page_tools_builtin">Built-in tools</string>
   <string name="setting_sub_agent_page_tools_builtin_desc">Built-in tools this sub-agent can call directly. Tap to select</string>
   <string name="setting_sub_agent_page_tools_mcp">MCP tools</string>
-  <string name="setting_sub_agent_page_tools_mcp_desc">Choose which saved MCP tools this sub-agent is allowed to call</string>
-  <string name="setting_sub_agent_page_tools_mcp_empty">No enabled MCP tools yet. Add and enable some in the "MCP" settings first</string>
+  <string name="setting_sub_agent_page_tools_mcp_desc">Choose which MCP backends this sub-agent may access</string>
+  <string name="setting_sub_agent_page_tools_mcp_empty">No enabled MCP servers yet. Add and enable some in the "MCP" settings first</string>
+  <string name="setting_sub_agent_page_tools_mcp_count">%1$d/%2$d tools selected</string>
+  <string name="setting_sub_agent_page_tools_mcp_no_tools">No tools available on this MCP server</string>
+  <string name="setting_sub_agent_page_tools_mcp_add">Add MCP tools</string>
+  <string name="setting_sub_agent_page_tools_mcp_add_title">MCP tools not added</string>
+  <string name="setting_sub_agent_page_tools_mcp_add_empty">Every MCP tool is already added</string>
+  <string name="setting_sub_agent_page_tools_mcp_remove">Remove from this sub-agent</string>
   <string name="setting_sub_agent_page_tools_selected_count">%1$d selected</string>
   <string name="setting_sub_agent_page_unnamed">Unnamed</string>
   <string name="setting_theme_page_preset_themes">Preset Themes</string>

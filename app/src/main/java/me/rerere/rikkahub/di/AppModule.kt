@@ -123,6 +123,7 @@ val appModule = module {
             templateTransformer = get(),
             providerManager = get(),
             chatToolFactory = get(),
+            capabilityApprovalStore = get(),
             mcpManager = get(),
             filesManager = get(),
             workspaceRepository = get(),

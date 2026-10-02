@@ -258,9 +258,10 @@ internal fun createSubAgentCollaborationTools(
     tools += Tool(
         name = REQUEST_CAPABILITY_TOOL,
         description = """
-            当你的工具不够用（例如缺少某个 MCP 工具或其它权限）时，向主智能体申请开通。
-            主智能体会自动裁定；若申请的是高权限工具，会转交用户确认。
+            当你的工具不够用（例如缺少某个 MCP 工具或其它权限）时，申请开通。
+            申请会转交用户确认（同意 / 拒绝 / 下一次默认同意）；用户同意后即直接开通。
             获批的工具在本次任务的后续步骤中即可直接调用。
+            注意：网络请求（http_request）属于基础能力，已经默认具备，无需申请。
         """.trimIndent(),
         parameters = {
             InputSchema.Obj(
@@ -283,14 +284,11 @@ internal fun createSubAgentCollaborationTools(
             val names = root["tools"]?.jsonArray?.mapNotNull { it.jsonPrimitive.contentOrNull } ?: emptyList()
             val reason = root["reason"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
             val text = runner.handleCapabilityRequest(
-                settings = settings,
                 agent = selfAgent,
                 pool = pool,
                 currentTools = dynamicTools,
                 requestedNames = names,
                 reason = reason,
-                callerAssistant = callerAssistant,
-                callerModel = callerModel,
                 group = group,
             )
             listOf(UIMessagePart.Text(text))

@@ -1,7 +1,6 @@
 package me.rerere.rikkahub.data.ai
 
 import kotlinx.coroutines.CancellationException
-import kotlinx.serialization.json.JsonObject
 import me.rerere.ai.core.ReasoningLevel
 import me.rerere.ai.core.Tool
 import me.rerere.ai.provider.Model
@@ -12,6 +11,8 @@ import me.rerere.rikkahub.data.ai.tools.ASK_SUB_AGENT_TOOL
 import me.rerere.rikkahub.data.ai.tools.GROUP_POST_TOOL
 import me.rerere.rikkahub.data.ai.tools.REQUEST_CAPABILITY_TOOL
 import me.rerere.rikkahub.data.ai.tools.createSubAgentCollaborationTools
+import me.rerere.rikkahub.data.ai.tools.local.HTTP_TOOL
+import me.rerere.rikkahub.data.ai.tools.local.buildHttpTool
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.datastore.findModelById
@@ -19,7 +20,6 @@ import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.CapabilityRecord
 import me.rerere.rikkahub.data.model.GroupMessage
 import me.rerere.rikkahub.data.model.GroupMessageKind
-import me.rerere.rikkahub.data.model.HIGH_PRIVILEGE_TOOLS
 import me.rerere.rikkahub.data.model.READ_ONLY_BLOCKED_TOOLS
 import me.rerere.rikkahub.data.model.SubAgent
 import me.rerere.rikkahub.data.model.SubAgentStepType
@@ -207,6 +207,10 @@ class SubAgentRunner(
                     append("\n\n【只读约束】你处于只读模式：只能读取与检索信息，")
                     append("禁止修改文件、执行写操作或做任何会改变系统状态的事情。")
                 }
+                append("\n\n【网络能力】你和主智能体拥有完全相同的网络功能：用 $HTTP_TOOL 直接发 GET/POST 等请求、")
+                append("读取网页或 API 响应、并用 save_to 把图片 / 视频 / 软件包等任意文件下载到本机。")
+                append("需要联网时直接调用 $HTTP_TOOL，不要因为没有网络而放弃。")
+                append("除此之外的文件、媒体等本地工具只要已在你的工具列表里，也和主智能体用法完全一致。")
                 if (depth < MAX_COLLAB_DEPTH) {
                     append("\n\n【协作】你有疑惑时用 $ASK_MAIN_AGENT_TOOL 向主智能体提问（它会直接回答，")
                     append("或决定开启小组讨论）；也可以用 $ASK_SUB_AGENT_TOOL 点名与某个子智能体一对一核对；")
@@ -226,9 +230,12 @@ class SubAgentRunner(
             localTools = emptyList(),
         )
 
-        // 子智能体的实时工具列表：白名单工具 + 协作工具。
+        // 子智能体的实时工具列表：白名单工具 + 网络请求 + 协作工具。
         // 通过 request_capability 获批的工具会被直接追加进这个列表，本轮后续步骤立即可用。
         val dynamicTools = resolveTools(agent, availableTools).toMutableList()
+        // 网络请求是子智能体的基础能力：无论白名单如何配置都直接注入，
+        // 使子智能体能够像主智能体一样出网抓取 / 调用 API / 下载文件。
+        ensureNetworkTool(dynamicTools, callerAssistant)
         if (depth < MAX_COLLAB_DEPTH) {
             dynamicTools += createSubAgentCollaborationTools(
                 settings = settings,
@@ -507,21 +514,18 @@ class SubAgentRunner(
     /**
      * 处理子智能体的工具 / 权限申请。
      *
-     * - 普通工具：由主智能体自动裁定；
-     * - 高权限工具（写入 / 执行类，或自身标记需要审批的 MCP 工具）：转交用户确认。
+     * 一律交由用户确认（同意 / 拒绝 / 下一次默认同意）：同意即直接开通，不再经主智能体二次裁定。
+     * 若用户此前已选择"下一次默认同意"且尚未发出新消息，则本次申请直接放行。
      *
-     * 获批的工具会立即追加进 [currentTools]（本次任务后续步骤即可用），
-     * 并按配置写回该子智能体的工具白名单以持久生效。
+     * 获批的工具会立即追加进 [currentTools]（本次任务后续步骤即可用）；
+     * 显式同意时会写回该子智能体的工具白名单长期生效。
      */
     suspend fun handleCapabilityRequest(
-        settings: Settings,
         agent: SubAgent,
         pool: List<Tool>,
         currentTools: MutableList<Tool>,
         requestedNames: List<String>,
         reason: String,
-        callerAssistant: Assistant,
-        callerModel: Model,
         group: SubAgentGroupChat? = null,
     ): String {
         val poolByName = pool.filter { it.name !in SUB_AGENT_EXCLUDED_TOOLS }.associateBy { it.name }
@@ -541,29 +545,24 @@ class SubAgentRunner(
             }.trim()
         }
 
-        val high = candidates.filter { isHighPrivilege(it) }
-        val low = candidates.filterNot { it.name in high.map { h -> h.name } }
-
-        val approvedLow = if (low.isNotEmpty()) {
-            decideCapabilityByMainAgent(settings, callerAssistant, callerModel, agent, low, reason)
+        // 用户的"下一次默认同意"仍然有效时，直接放行，不再弹窗打扰。
+        val autoApproved = approvalStore.isAutoApproveEnabled
+        val decision = if (autoApproved) {
+            CapabilityDecision.APPROVE
         } else {
-            emptyList()
+            // 交由用户手动同意 / 拒绝 / 下一次默认同意；同意后直接开通，不再经主智能体二次裁定。
+            approvalStore.request(agent.name, candidates.map { it.name }, reason)
         }
 
-        val approvedHigh = if (high.isNotEmpty()) {
-            val approved = approvalStore.request(agent.name, high.map { it.name }, reason)
-            if (approved) high else emptyList()
-        } else {
-            emptyList()
-        }
-
-        val granted = (approvedLow + approvedHigh).distinctBy { it.name }
+        val granted = if (decision == CapabilityDecision.REJECT) emptyList() else candidates
         granted.forEach { tool ->
             if (currentTools.none { it.name == tool.name }) {
                 currentTools += tool.copy(needsApproval = { false })
             }
         }
-        if (granted.isNotEmpty()) persistGrantedTools(agent, granted)
+        // 用户点「同意」确认过的这一批工具写回白名单长期生效；
+        // 之后因"下一次默认同意"自动放行的申请只在本次问答内有效，不再写回。
+        if (granted.isNotEmpty() && !autoApproved) persistGrantedTools(agent, granted)
 
         val grantedNames = granted.map { it.name }.toSet()
         // 把本次申请写进小组记录，随任务过程一并展示，便于追溯
@@ -574,7 +573,7 @@ class SubAgentRunner(
                 reason = reason,
                 approved = granted.map { it.name },
                 denied = candidates.map { it.name }.filterNot { it in grantedNames },
-                decidedBy = if (high.isNotEmpty()) "用户" else "主智能体",
+                decidedBy = if (autoApproved) "用户（默认同意）" else "用户",
             )
         )
         return buildString {
@@ -589,39 +588,7 @@ class SubAgentRunner(
         }.trim().ifBlank { "申请已处理。" }
     }
 
-    /** 普通工具申请交由主智能体自动裁定：只输出被批准的工具名，每行一个。 */
-    private suspend fun decideCapabilityByMainAgent(
-        settings: Settings,
-        callerAssistant: Assistant,
-        callerModel: Model,
-        agent: SubAgent,
-        tools: List<Tool>,
-        reason: String,
-    ): List<Tool> {
-        if (tools.isEmpty()) return emptyList()
-        val systemPrompt = "你是主智能体，负责审批子智能体的工具扩容申请。" +
-            "只输出被批准的工具名，每行一个；若全部拒绝只输出 NONE。不要输出任何其它内容。"
-        val userPrompt = buildString {
-            appendLine("子智能体「${agent.name}」的职责：${agent.description.ifBlank { "（无描述）" }}")
-            appendLine("申请理由：${reason.ifBlank { "（未说明）" }}")
-            appendLine("申请使用以下工具：")
-            tools.forEach { tool ->
-                val desc = tool.description.lineSequence().firstOrNull().orEmpty().take(80)
-                appendLine("- ${tool.name}：$desc")
-            }
-        }
-        val answer = callMainAgent(settings, callerAssistant, callerModel, systemPrompt, userPrompt)
-        val approved = answer.lineSequence()
-            .map { it.trim().removePrefix("-").trim() }
-            .filter { it.isNotEmpty() && !it.equals("NONE", ignoreCase = true) }
-            .toList()
-        if (approved.isEmpty()) return emptyList()
-        return tools.filter { tool ->
-            approved.any { it.equals(tool.name, ignoreCase = true) || it.contains(tool.name) }
-        }
-    }
-
-    /** 用主智能体做一次不带工具的单步生成，供协作问答与权限裁定复用。 */
+    /** 用主智能体做一次不带工具的单步生成，供协作问答复用。 */
     private suspend fun callMainAgent(
         settings: Settings,
         callerAssistant: Assistant,
@@ -669,10 +636,16 @@ class SubAgentRunner(
         }
     }
 
-    /** 是否为需要向用户确认的高权限工具。 */
-    private fun isHighPrivilege(tool: Tool): Boolean =
-        tool.name in HIGH_PRIVILEGE_TOOLS ||
-            runCatching { tool.needsApproval(JsonObject(emptyMap())) }.getOrDefault(false)
+    /**
+     * 保证子智能体始终持有网络请求工具。
+     *
+     * 主智能体若已开启"网络请求"本地工具，工具池里已包含它；否则按主智能体配置的域名白名单
+     * 现造一个，让子智能体能够直接出网（抓网页 / 调 API / 下载文件），而不必先申请。
+     */
+    private fun ensureNetworkTool(tools: MutableList<Tool>, callerAssistant: Assistant) {
+        if (tools.any { it.name == HTTP_TOOL }) return
+        tools += buildHttpTool(callerAssistant.httpAllowedDomains)
+    }
 
     private fun resolveTools(agent: SubAgent, availableTools: List<Tool>): List<Tool> {
         val pool = availableTools.filter { it.name !in SUB_AGENT_EXCLUDED_TOOLS }

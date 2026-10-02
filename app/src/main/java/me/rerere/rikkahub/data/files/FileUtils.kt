@@ -15,6 +15,82 @@ import kotlin.uuid.Uuid
 object FileUtils {
     private const val TAG = "FileUtils"
 
+    /** 压缩包 / 安装包后缀：内容为二进制，不能按文本读取，需交给解包工具处理。 */
+    val ARCHIVE_EXTENSIONS = setOf(
+        "apk", "apks", "xapk", "apkm", "aab",
+        "zip", "jar", "aar", "war",
+        "7z", "rar", "tar", "gz", "tgz", "bz2", "xz", "zst", "lz4",
+        "iso", "img",
+    )
+
+    /**
+     * 系统 [MimeTypeMap] 认不出来的后缀 → MIME 兜底表。
+     *
+     * 主要覆盖 APK、各类压缩包与其它二进制产物：这些格式系统多返回 null，
+     * 若直接退化成 text/plain，后续会被当成文本读取而读出乱码。
+     */
+    private val EXTRA_MIME_MAP = mapOf(
+        // Android 安装包 / 打包产物
+        "apk" to "application/vnd.android.package-archive",
+        "apks" to "application/vnd.android.package-archive",
+        "xapk" to "application/vnd.android.package-archive",
+        "apkm" to "application/vnd.android.package-archive",
+        "aab" to "application/zip",
+        "dex" to "application/x-dex",
+        "smali" to "text/plain",
+        // 压缩包
+        "zip" to "application/zip",
+        "jar" to "application/java-archive",
+        "aar" to "application/java-archive",
+        "war" to "application/java-archive",
+        "7z" to "application/x-7z-compressed",
+        "rar" to "application/vnd.rar",
+        "tar" to "application/x-tar",
+        "gz" to "application/gzip",
+        "tgz" to "application/gzip",
+        "bz2" to "application/x-bzip2",
+        "xz" to "application/x-xz",
+        "zst" to "application/zstd",
+        "lz4" to "application/x-lz4",
+        // 其它常见二进制
+        "so" to "application/octet-stream",
+        "bin" to "application/octet-stream",
+        "img" to "application/octet-stream",
+        "iso" to "application/x-iso9660-image",
+        // 文档
+        "rtf" to "application/rtf",
+        "odt" to "application/vnd.oasis.opendocument.text",
+        "ods" to "application/vnd.oasis.opendocument.spreadsheet",
+        "odp" to "application/vnd.oasis.opendocument.presentation",
+        "epub" to "application/epub+zip",
+        // 纯文本类，补上系统库里缺失的后缀
+        "log" to "text/plain",
+        "conf" to "text/plain",
+        "cfg" to "text/plain",
+        "ini" to "text/plain",
+        "env" to "text/plain",
+        "gradle" to "text/plain",
+        "kts" to "text/plain",
+        "properties" to "text/plain",
+        "yml" to "text/plain",
+        "yaml" to "text/plain",
+        "toml" to "text/plain",
+        "md" to "text/markdown",
+        "markdown" to "text/markdown",
+        "mdx" to "text/markdown",
+    )
+
+    /** 按后缀推断 MIME；系统表查不到时回落到 [EXTRA_MIME_MAP]。查不到返回 null。 */
+    fun mimeFromFileName(fileName: String): String? {
+        val ext = fileName.substringAfterLast('.', "").lowercase()
+        if (ext.isEmpty() || ext == fileName) return null
+        return MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext) ?: EXTRA_MIME_MAP[ext]
+    }
+
+    /** 该后缀是否属于「压缩包 / 安装包」这类可解包处理的二进制格式。 */
+    fun isArchiveFileName(fileName: String): Boolean =
+        fileName.substringAfterLast('.', "").lowercase() in ARCHIVE_EXTENSIONS
+
     fun buildUuidFileName(displayName: String?, mimeType: String?): String {
         val extFromName = displayName
             ?.substringAfterLast('.', "")
@@ -81,11 +157,8 @@ object FileUtils {
     }
 
     fun guessMimeType(file: File, fileName: String): String {
-        val ext = fileName.substringAfterLast('.', "").lowercase()
-        if (ext.isNotEmpty()) {
-            return MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext)
-                ?: "application/octet-stream"
-        }
+        // 后缀优先（含 APK / 压缩包等系统表缺失的兜底），后缀无法判定时再嗅探字节
+        mimeFromFileName(fileName)?.let { return it }
         return sniffMimeType(file)
     }
 

@@ -924,8 +924,14 @@
   <string name="setting_sub_agent_page_tools_builtin">内置工具</string>
   <string name="setting_sub_agent_page_tools_builtin_desc">子智能体可直接调用的内置工具，点击勾选</string>
   <string name="setting_sub_agent_page_tools_mcp">MCP 工具</string>
-  <string name="setting_sub_agent_page_tools_mcp_desc">规定该子智能体可调用哪些已保存的 MCP 工具</string>
-  <string name="setting_sub_agent_page_tools_mcp_empty">暂无已启用的 MCP 工具，请先到「MCP」设置里添加并启用</string>
+  <string name="setting_sub_agent_page_tools_mcp_desc">规定该子智能体可以访问哪些已保存的 MCP 后端</string>
+  <string name="setting_sub_agent_page_tools_mcp_empty">暂无已启用的 MCP 服务，请先到「MCP」设置里添加并启用</string>
+  <string name="setting_sub_agent_page_tools_mcp_count">已选 %1$d/%2$d 个工具</string>
+  <string name="setting_sub_agent_page_tools_mcp_no_tools">该 MCP 服务暂无可用工具</string>
+  <string name="setting_sub_agent_page_tools_mcp_add">添加 MCP 工具</string>
+  <string name="setting_sub_agent_page_tools_mcp_add_title">未添加的 MCP 工具</string>
+  <string name="setting_sub_agent_page_tools_mcp_add_empty">所有 MCP 工具都已添加</string>
+  <string name="setting_sub_agent_page_tools_mcp_remove">从该子智能体移除</string>
   <string name="setting_sub_agent_page_tools_selected_count">已选 %1$d</string>
   <string name="setting_sub_agent_page_unnamed">未命名</string>
   <string name="setting_theme_page_preset_themes">预设主题</string>

@@ -40,6 +40,7 @@ import me.rerere.ai.ui.isEmptyInputMessage
 import me.rerere.common.android.Logging
 import me.rerere.rikkahub.AppScope
 import me.rerere.rikkahub.R
+import me.rerere.rikkahub.data.ai.CapabilityApprovalStore
 import me.rerere.rikkahub.data.ai.GenerationChunk
 import me.rerere.rikkahub.data.ai.GenerationLoop
 import me.rerere.rikkahub.data.ai.TranslationHandler
@@ -158,6 +159,7 @@ class ChatService(
     private val templateTransformer: TemplateTransformer,
     private val providerManager: ProviderManager,
     private val chatToolFactory: ChatToolFactory,
+    private val capabilityApprovalStore: CapabilityApprovalStore,
     val mcpManager: McpManager,
     private val filesManager: FilesManager,
     private val workspaceRepository: WorkspaceRepository,
@@ -336,6 +338,8 @@ class ChatService(
 
     fun sendMessage(conversationId: Uuid, content: List<UIMessagePart>, answer: Boolean = true) {
         if (content.isEmptyInputMessage()) return
+        // 新的用户提问意味着上一轮的"下一次默认同意"失效
+        capabilityApprovalStore.beginUserTurn()
         val session = sessionManager.getOrCreate(conversationId)
         synchronized(session) {
             if (session.messageQueue.state.value.messages.isEmpty()) session.messageQueue.resume()
@@ -346,6 +350,8 @@ class ChatService(
 
     /** Enqueue immediately; the result belongs to this item even after edits or later turns. */
     fun enqueueVoiceMessage(conversationId: Uuid, text: String): Deferred<String?> {
+        // 语音提问同样视为新一轮用户输入
+        capabilityApprovalStore.beginUserTurn()
         val session = sessionManager.getOrCreate(conversationId)
         val reply = CompletableDeferred<String?>()
         synchronized(session) {

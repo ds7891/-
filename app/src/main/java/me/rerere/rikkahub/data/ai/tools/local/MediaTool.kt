@@ -8,6 +8,8 @@ import android.graphics.ColorMatrix
 import android.graphics.ColorMatrixColorFilter
 import android.graphics.Matrix
 import android.graphics.Paint
+import android.graphics.Rect
+import android.graphics.Typeface
 import android.media.MediaMetadataRetriever
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -32,8 +34,23 @@ private val MEDIA_DESTRUCTIVE_ACTIONS = setOf("edit_image", "video_frames")
 
 private const val MEDIA_DEFAULT_LIST_LIMIT = 200
 private const val MEDIA_DEFAULT_FRAME_COUNT = 6
-private const val MEDIA_MAX_FRAME_COUNT = 24
+private const val MEDIA_MAX_FRAME_COUNT = 600
 private const val MEDIA_PREVIEW_MAX = 2048
+
+/** 抽帧输出的最长边上限，避免 4K 视频抽帧时占满内存。 */
+private const val MEDIA_FRAME_MAX_SIZE = 1280
+
+/** 抽帧间隔下限（秒）：0.01 秒一帧，用于看运动过程。间隔上限不设限。 */
+private const val MEDIA_MIN_FRAME_INTERVAL = 0.01
+
+/** 一次抽帧默认最多落盘多少张，可用 max_frames 上调。 */
+private const val MEDIA_DEFAULT_MAX_FRAMES = 60
+
+/** 一次最多返回给模型查看多少张帧，其余只落盘并在 JSON 里给出路径。 */
+private const val MEDIA_MAX_RETURNED_IMAGES = 24
+
+/** 帧间隔密到这个值以下时不再做"换一帧重试"，避免密集抽帧时反复解码。 */
+private const val MEDIA_DENSE_INTERVAL = 0.1
 
 private val IMAGE_EXTENSIONS = setOf(
     "jpg", "jpeg", "png", "webp", "bmp", "gif", "heic", "heif", "avif",
@@ -67,8 +84,16 @@ internal fun buildMediaTool(context: Context): Tool = Tool(
           brightness/contrast/saturation（亮度/对比度/饱和度，1 为原始值）、grayscale（转灰度）、
           format（jpeg/png）与 quality（1~100）。传 return_image=true 可把编辑结果再返回给模型查看
         - video_info：读取视频时长、分辨率、旋转角、码率、格式
-        - video_frames：抽帧。传 timestamps（秒，数组）按指定时间点抽帧，或用 count 均匀抽取 N 帧；
-          抽出的帧会保存到 output_dir，并作为图片返回给模型查看，供模型分析视频画面
+        - video_frames：抽帧，三种方式任选（优先级 timestamps > interval > count）：
+          ① timestamps：[0, 2.5, 5] 按确切时间点抽；
+          ② interval：按固定间隔抽，配合 start/end 指定区间。间隔最小 0.01 秒（逐帧看运动过程），
+             上限不设限；看运动过程建议 1 秒一帧，普通浏览 2~5 秒，静态画面可给 30 秒以上；
+          ③ count：不填前两者时整段均匀抽 N 帧，默认 6。
+          每张图左上角会烧录"序号 + 时间戳"，返回的 JSON 里给出 mode / interval_seconds /
+          effective_interval_seconds / requested_seconds / captured_seconds / path；
+          帧数超过 max_frames（默认 60）会均匀降采样并给出 warning；帧数多时只把均匀挑选的
+          最多 24 张返回给模型查看，其余仅落盘。若某张标了 duplicate_of，说明它与该路径画面完全相同
+          （间隔小于视频帧率间隔属正常，否则可能是该时段静止），此时不要据此判定"视频没动"。
         典型用法：先用 list 找到文件 → view_image / video_frames 让模型理解内容 → edit_image 按要求修改。
         path 支持绝对路径、相对路径（相对内部共享存储根目录）与 /sdcard 前缀。
         未授予"所有文件访问权限"时读写会失败，应提示用户到助手设置里开启本工具并授权。
@@ -180,12 +205,33 @@ internal fun buildMediaTool(context: Context): Tool = Tool(
                 })
                 put("timestamps", buildJsonObject {
                     put("type", "array")
-                    put("description", "video_frames 要抽帧的时间点（秒），例如 [0, 2.5, 5]。")
+                    put("description", "video_frames 要抽帧的确切时间点（秒），例如 [0, 2.5, 5]；优先级最高。")
                     put("items", buildJsonObject { put("type", "number") })
+                })
+                put("interval", buildJsonObject {
+                    put("type", "number")
+                    put(
+                        "description",
+                        "video_frames 按固定间隔抽帧（秒），配合 start/end 使用。" +
+                            "最低 0.01（用于逐帧看运动过程），最高不设限；" +
+                            "看运动过程建议 1，普通浏览建议 2~5，静态画面可给 30 以上。",
+                    )
+                })
+                put("start", buildJsonObject {
+                    put("type", "number")
+                    put("description", "video_frames 抽帧起始时间（秒），默认 0。")
+                })
+                put("end", buildJsonObject {
+                    put("type", "number")
+                    put("description", "video_frames 抽帧结束时间（秒），默认视频结尾。")
+                })
+                put("max_frames", buildJsonObject {
+                    put("type", "integer")
+                    put("description", "video_frames 本次最多落盘多少张帧，默认 60，最大 600；超出会均匀降采样。")
                 })
                 put("count", buildJsonObject {
                     put("type", "integer")
-                    put("description", "video_frames 未指定 timestamps 时，均匀抽取的帧数，默认 6，最大 24。")
+                    put("description", "video_frames 未指定 timestamps / interval 时，整段均匀抽取的帧数，默认 6，最大 600。")
                 })
             },
             required = listOf("action"),
@@ -397,7 +443,7 @@ private fun actionVideoInfo(params: JsonObject): String {
     }
 }
 
-/** 抽取视频关键帧并返回给模型。 */
+/** 抽取视频帧并返回给模型；每个时间点都尽量抽到画面真正变化的那一帧。 */
 private fun actionVideoFrames(params: JsonObject): List<UIMessagePart> {
     val file = requireMediaFile(params) ?: return listOf(UIMessagePart.Text(mediaErrorJson("MISSING_PATH", "path is required")))
     if (!file.isFile) return listOf(UIMessagePart.Text(mediaErrorJson("NOT_FOUND", "视频不存在：${file.absolutePath}")))
@@ -413,44 +459,76 @@ private fun actionVideoFrames(params: JsonObject): List<UIMessagePart> {
     try {
         retriever.setDataSource(file.absolutePath)
         val durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
-        val explicit = params.mediaDoubleArray("timestamps")
-        val timestampsSeconds = explicit.ifEmpty {
-            val count = (params.mediaInt("count") ?: MEDIA_DEFAULT_FRAME_COUNT).coerceIn(1, MEDIA_MAX_FRAME_COUNT)
-            if (durationMs <= 0) {
-                listOf(0.0)
-            } else {
-                (0 until count).map { index -> durationMs / 1000.0 * index / (count - 1).coerceAtLeast(1) }
-            }
-        }
+        val durationSeconds = durationMs / 1000.0
+        val maxFrames = (params.mediaInt("max_frames") ?: MEDIA_DEFAULT_MAX_FRAMES)
+            .coerceIn(1, MEDIA_MAX_FRAME_COUNT)
 
+        val plan = planFrameTimestamps(params, durationSeconds, maxFrames)
+        val requestedSeconds = plan.timestamps
+        if (requestedSeconds.isEmpty()) {
+            return listOf(UIMessagePart.Text(mediaErrorJson("NO_FRAMES", "没有解析出任何抽帧时间点，请检查 timestamps / interval / count。")))
+        }
+        // 间隔很密时不再做"换一帧重试"，否则密集抽帧会被反复解码拖慢
+        val allowNudge = plan.effectiveInterval <= 0.0 || plan.effectiveInterval >= MEDIA_DENSE_INTERVAL
+
+        // 记录已抽出的画面指纹，用于发现"不同时间点抽到同一帧"
+        val seenFingerprints = HashMap<String, String>()
+        val frameEntries = mutableListOf<Pair<String, String>>() // 时间点 -> 图片路径
         val saved = buildJsonArray {
-            timestampsSeconds.forEachIndexed { index, seconds ->
-                val timeUs = (seconds.coerceAtLeast(0.0) * 1_000_000).toLong()
-                val frame = runCatching {
-                    retriever.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
-                }.getOrNull()
-                if (frame == null) {
+            requestedSeconds.forEachIndexed { index, seconds ->
+                val requested = seconds.coerceAtLeast(0.0)
+                val label = "%d/%d  %s".format(
+                    index + 1,
+                    requestedSeconds.size,
+                    formatTimestamp(requested),
+                )
+                val capture = captureDistinctFrame(retriever, requested, durationSeconds, seenFingerprints, allowNudge)
+                if (capture == null) {
                     add(buildJsonObject {
-                        put("at_seconds", seconds)
+                        put("index", index + 1)
+                        put("requested_seconds", requested)
                         put("error", "无法抽取该时间点的帧")
                     })
                     return@forEachIndexed
                 }
-                val target = File(outDir, "frame_%03d_%.2fs.jpg".format(index, seconds))
+
+                val target = File(outDir, "frame_%04d_at_%.2fs.jpg".format(index + 1, requested))
+                val rendered = renderFrameForSave(capture.bitmap, label, MEDIA_FRAME_MAX_SIZE)
                 runCatching {
-                    target.outputStream().use { stream -> frame.compress(Bitmap.CompressFormat.JPEG, 90, stream) }
+                    target.outputStream().use { stream -> rendered.compress(Bitmap.CompressFormat.JPEG, 90, stream) }
                 }
-                if (!frame.isRecycled) frame.recycle()
+                if (!rendered.isRecycled) rendered.recycle()
+
+                val fingerprint = capture.fingerprint
+                val duplicateOf = seenFingerprints[fingerprint]
+                if (duplicateOf == null) seenFingerprints[fingerprint] = target.absolutePath
 
                 add(buildJsonObject {
-                    put("at_seconds", seconds)
+                    put("index", index + 1)
+                    put("requested_seconds", requested)
+                    put("captured_seconds", capture.capturedSeconds)
+                    put("label", label)
                     put("path", target.absolutePath)
                     put("size", target.length())
+                    // 同一帧被重复抽到时会标注出来，避免把静态画面误判成"视频没动"
+                    if (duplicateOf != null) {
+                        put("duplicate_of", duplicateOf)
+                    }
                 })
                 if (target.length() > 0) {
-                    parts.add(UIMessagePart.Image(url = "file://${target.absolutePath}"))
+                    frameEntries += formatTimestamp(requested) to target.absolutePath
                 }
             }
+        }
+
+        // 帧数很多时只把均匀挑选的一部分返回给模型查看，其余落盘并在 JSON 里给出路径
+        val returned = if (frameEntries.size <= MEDIA_MAX_RETURNED_IMAGES) {
+            frameEntries
+        } else {
+            selectEvenly(frameEntries, MEDIA_MAX_RETURNED_IMAGES)
+        }
+        returned.forEach { (_, path) ->
+            parts.add(UIMessagePart.Image(url = "file://$path"))
         }
 
         parts.add(
@@ -460,7 +538,33 @@ private fun actionVideoFrames(params: JsonObject): List<UIMessagePart> {
                     put("video", file.absolutePath)
                     put("duration_ms", durationMs)
                     put("output_dir", outDir.absolutePath)
+                    put("mode", plan.mode)
+                    plan.intervalSeconds?.let { put("interval_seconds", it) }
+                    plan.effectiveInterval.takeIf { it > 0 }?.let { put("effective_interval_seconds", it) }
+                    plan.startSeconds?.let { put("start_seconds", it) }
+                    plan.endSeconds?.let { put("end_seconds", it) }
+                    put("requested_count", requestedSeconds.size)
+                    put("saved_count", frameEntries.size)
+                    put("returned_images", returned.size)
+                    put("distinct_frames", seenFingerprints.size)
                     put("frames", saved)
+                    if (plan.truncated) {
+                        put(
+                            "warning",
+                            "按间隔请求的帧数超过 max_frames=${maxFrames}，已均匀降采样到 ${requestedSeconds.size} 张，" +
+                                "实际间隔约 ${"%.2f".format(plan.effectiveInterval)} 秒。" +
+                                "需要更密就缩小 start/end 范围或调大 max_frames。",
+                        )
+                    } else if (durationMs <= 0) {
+                        put("warning", "未能读取视频时长，已按时间点 0 抽帧。")
+                    } else if (seenFingerprints.size < requestedSeconds.size) {
+                        put(
+                            "warning",
+                            "有多个时间点抽到完全相同的画面（见 duplicate_of）。" +
+                                "间隔小于视频帧率间隔（如 30fps 约 0.033 秒）时属正常现象；" +
+                                "否则可能是该时段画面静止。时间戳已烧录在每张图左上角，可据此核对。",
+                        )
+                    }
                 }.toString()
             )
         )
@@ -470,6 +574,204 @@ private fun actionVideoFrames(params: JsonObject): List<UIMessagePart> {
         runCatching { retriever.release() }
     }
     return parts
+}
+
+/** 抽帧计划：最终时间点序列与本次实际使用的间隔。 */
+private class FramePlan(
+    val timestamps: List<Double>,
+    val mode: String,
+    /** 用户请求的间隔（仅 interval 模式） */
+    val intervalSeconds: Double? = null,
+    /** 实际落盘时相邻帧的间隔，用于判断解码密度 */
+    val effectiveInterval: Double = 0.0,
+    val startSeconds: Double? = null,
+    val endSeconds: Double? = null,
+    val truncated: Boolean = false,
+)
+
+/**
+ * 解析抽帧时间点，优先级：timestamps > interval > count。
+ *
+ * interval 支持低至 [MEDIA_MIN_FRAME_INTERVAL]（0.01 秒，用来看运动过程），上限不设限；
+ * 生成的帧数超过 [maxFrames] 时均匀降采样，避免一次抽出海量图片。
+ */
+private fun planFrameTimestamps(params: JsonObject, durationSeconds: Double, maxFrames: Int): FramePlan {
+    val explicit = params.mediaDoubleArray("timestamps")
+    if (explicit.isNotEmpty()) {
+        val sorted = explicit.map { it.coerceAtLeast(0.0) }.sorted()
+        val kept = if (sorted.size > maxFrames) selectEvenly(sorted, maxFrames) else sorted
+        return FramePlan(
+            timestamps = kept,
+            mode = "timestamps",
+            effectiveInterval = kept.zipWithNext { a, b -> b - a }.minOrNull() ?: 0.0,
+            truncated = kept.size < sorted.size,
+        )
+    }
+
+    val interval = params.mediaDouble("interval")?.takeIf { it > 0 }
+    if (interval != null) {
+        val step = interval.coerceAtLeast(MEDIA_MIN_FRAME_INTERVAL)
+        val start = (params.mediaDouble("start") ?: 0.0).coerceAtLeast(0.0)
+        val end = params.mediaDouble("end")?.coerceAtLeast(start)
+            ?: durationSeconds.takeIf { it > 0 }?.let { it.coerceAtMost(durationSeconds) }
+            ?: start
+        val last = (end - 0.001).coerceAtLeast(start)
+
+        val wanted = (Math.floor((last - start) / step).toInt() + 1).coerceAtLeast(1)
+        val truncated = wanted > maxFrames
+        val actualStep = if (truncated) (last - start) / (maxFrames - 1).coerceAtLeast(1) else step
+        val count = if (truncated) maxFrames else wanted
+        val timestamps = (0 until count).map { index -> start + index * actualStep }
+
+        return FramePlan(
+            timestamps = timestamps,
+            mode = "interval",
+            intervalSeconds = step,
+            effectiveInterval = actualStep,
+            startSeconds = start,
+            endSeconds = end,
+            truncated = truncated,
+        )
+    }
+
+    val count = (params.mediaInt("count") ?: MEDIA_DEFAULT_FRAME_COUNT).coerceIn(1, maxFrames)
+    if (durationSeconds <= 0) {
+        return FramePlan(timestamps = listOf(0.0), mode = "count", effectiveInterval = 0.0)
+    }
+    // 末帧取在时长略微靠前处，避免正好落在 EOF 抽不到画面
+    val last = (durationSeconds - 0.05).coerceAtLeast(0.0)
+    val timestamps = (0 until count).map { index -> last * index / (count - 1).coerceAtLeast(1) }
+    return FramePlan(
+        timestamps = timestamps,
+        mode = "count",
+        effectiveInterval = last / (count - 1).coerceAtLeast(1),
+        endSeconds = durationSeconds,
+    )
+}
+
+/** 从列表中均匀挑选 [limit] 个元素，首尾都会保留。 */
+private fun <T> selectEvenly(items: List<T>, limit: Int): List<T> {
+    if (items.size <= limit) return items
+    if (limit <= 1) return listOf(items.first())
+    return (0 until limit).map { index -> items[(index.toLong() * (items.size - 1) / (limit - 1)).toInt()] }
+}
+
+/** 一次抽帧的结果。 */
+private class CapturedFrame(
+    val bitmap: Bitmap,
+    val fingerprint: String,
+    /** 实际取到画面的时间点（可能因微调而略偏离请求值） */
+    val capturedSeconds: Double,
+)
+
+/**
+ * 在 [requestedSeconds] 附近取一帧，并尽量避开与已抽帧完全相同的画面。
+ *
+ * `getFrameAtTime(t, OPTION_CLOSEST_SYNC)` 只会退到最近的关键帧，关键帧稀疏时多个时间点会抽到同一帧；
+ * 这里优先用 `OPTION_CLOSEST` 解码最接近的真实帧。
+ * [allowNudge] 为 true 且仍与已抽帧重复时，再在当前时间点附近做小幅偏移重试；
+ * 密集抽帧（间隔 < 0.1 秒）时关闭，避免同一时刻被反复解码拖慢。
+ */
+private fun captureDistinctFrame(
+    retriever: MediaMetadataRetriever,
+    requestedSeconds: Double,
+    durationSeconds: Double,
+    seenFingerprints: Map<String, String>,
+    allowNudge: Boolean,
+): CapturedFrame? {
+    val upperBound = if (durationSeconds > 0) (durationSeconds - 0.001).coerceAtLeast(0.0) else Double.MAX_VALUE
+    // 先取请求时间点，再向两侧微调，尽量落在同一秒内的真实画面上
+    val offsets = if (allowNudge) {
+        listOf(0.0, 0.04, -0.04, 0.12, -0.12, 0.3, -0.3, 0.6, -0.6)
+    } else {
+        listOf(0.0)
+    }
+
+    var fallback: CapturedFrame? = null
+    offsets.forEach { offset ->
+        val time = (requestedSeconds + offset).coerceIn(0.0, upperBound)
+        if (time < 0) return@forEach
+        val bitmap = frameAt(retriever, time) ?: return@forEach
+        val fingerprint = bitmapFingerprint(bitmap)
+        val candidate = CapturedFrame(bitmap, fingerprint, time)
+
+        if (fingerprint !in seenFingerprints) {
+            fallback?.bitmap?.let { if (!it.isRecycled) it.recycle() }
+            return candidate
+        }
+        if (fallback == null) {
+            fallback = candidate
+        } else if (!bitmap.isRecycled) {
+            bitmap.recycle()
+        }
+    }
+    return fallback
+}
+
+/** 优先解码最接近时间点的真实帧；退化为关键帧只作为兜底。 */
+private fun frameAt(retriever: MediaMetadataRetriever, seconds: Double): Bitmap? {
+    val timeUs = (seconds.coerceAtLeast(0.0) * 1_000_000).toLong()
+    return runCatching {
+        retriever.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST)
+    }.getOrNull() ?: runCatching {
+        retriever.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+    }.getOrNull()
+}
+
+/** 用 16x16 缩略图的像素做指纹，判断两张帧是否是同一画面。 */
+private fun bitmapFingerprint(bitmap: Bitmap): String {
+    val size = 16
+    val thumbnail = runCatching { Bitmap.createScaledBitmap(bitmap, size, size, true) }.getOrNull() ?: return ""
+    val pixels = IntArray(size * size)
+    thumbnail.getPixels(pixels, 0, size, 0, 0, size, size)
+    if (thumbnail !== bitmap && !thumbnail.isRecycled) thumbnail.recycle()
+    var hash = 17L
+    pixels.forEach { hash = hash * 31 + it }
+    return hash.toString()
+}
+
+/**
+ * 缩放并在左上角烧录时间戳后返回新图，源图会被回收。
+ *
+ * 时间戳直接画在画面上：一方面人眼能对上时间，另一方面视觉模型看到图片时也能读出对应时刻。
+ */
+private fun renderFrameForSave(source: Bitmap, label: String, maxSize: Int): Bitmap {
+    val longest = maxOf(source.width, source.height).coerceAtLeast(1)
+    val ratio = if (longest > maxSize) maxSize.toFloat() / longest else 1f
+    val width = (source.width * ratio).toInt().coerceAtLeast(1)
+    val height = (source.height * ratio).toInt().coerceAtLeast(1)
+
+    val result = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+    Canvas(result).drawBitmap(source, null, Rect(0, 0, width, height), Paint(Paint.FILTER_BITMAP_FLAG))
+    if (!source.isRecycled) source.recycle()
+
+    val textSize = (height / 16f).coerceIn(20f, 72f)
+    val labelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = android.graphics.Color.WHITE
+        this.textSize = textSize
+        typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+        setShadowLayer(textSize / 6f, 0f, 0f, android.graphics.Color.BLACK)
+    }
+    val padding = textSize * 0.45f
+    val barWidth = (labelPaint.measureText(label) + padding * 2).coerceAtMost(width.toFloat())
+    Canvas(result).apply {
+        drawRect(
+            0f,
+            0f,
+            barWidth,
+            textSize + padding * 2,
+            Paint().apply { color = android.graphics.Color.argb(150, 0, 0, 0) },
+        )
+        drawText(label, padding, textSize + padding, labelPaint)
+    }
+    return result
+}
+
+/** 把秒数格式化成 mm:ss.SS。 */
+private fun formatTimestamp(seconds: Double): String {
+    val safe = seconds.coerceAtLeast(0.0)
+    val minutes = (safe / 60).toInt()
+    return "%02d:%05.2f".format(minutes, safe - minutes * 60)
 }
 
 private fun requireMediaFile(params: JsonObject): File? = resolvePath(params.mediaString("path"))
