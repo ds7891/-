@@ -56,6 +56,7 @@ import me.rerere.hugeicons.stroke.GlobalSearch
 import me.rerere.hugeicons.stroke.ImageUpload
 import me.rerere.hugeicons.stroke.InLove
 import me.rerere.hugeicons.stroke.LookTop
+import me.rerere.hugeicons.stroke.MagicWand01
 import me.rerere.hugeicons.stroke.McpServer
 import me.rerere.hugeicons.stroke.Megaphone01
 import me.rerere.hugeicons.stroke.Package
@@ -189,6 +190,12 @@ fun SettingPage(vm: SettingVM = koinViewModel()) {
                         leadingContent = { Icon(HugeIcons.Settings03, null) },
                         supportingContent = { Text(stringResource(R.string.setting_page_preferences_desc)) },
                         headlineContent = { Text(stringResource(R.string.setting_page_preferences)) },
+                    )
+                    item(
+                        onClick = { navController.navigate(Screen.SettingQingshuiFeatures) },
+                        leadingContent = { Icon(HugeIcons.MagicWand01, null) },
+                        supportingContent = { Text(stringResource(R.string.setting_page_qingshui_features_desc)) },
+                        headlineContent = { Text(stringResource(R.string.setting_page_qingshui_features)) },
                     )
                     item(
                         onClick = { navController.navigate(Screen.Assistant) },

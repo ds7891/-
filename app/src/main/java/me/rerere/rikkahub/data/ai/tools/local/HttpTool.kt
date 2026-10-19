@@ -21,6 +21,7 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import org.koin.java.KoinJavaComponent.getKoin
+import java.io.BufferedInputStream
 import java.io.File
 import java.io.InputStream
 import java.net.URLDecoder
@@ -32,7 +33,6 @@ const val HTTP_TOOL = "http_request"
 private const val DEFAULT_TIMEOUT_SECONDS = 30
 private const val MAX_TIMEOUT_SECONDS = 120
 private const val DEFAULT_MAX_BYTES = 512 * 1024
-private const val HARD_MAX_BYTES = 32 * 1024 * 1024
 
 /** 流式下载到文件时使用的缓冲区大小。 */
 private const val STREAM_BUFFER_BYTES = 64 * 1024
@@ -43,8 +43,8 @@ private const val DEFAULT_DOWNLOAD_NAME = "download.bin"
 /** 未指定 save_to 时，图片自动落地到的目录（相对内部共享存储根目录）。 */
 private const val DEFAULT_IMAGE_DIR = "Download/清水AI"
 
-/** 未指定 save_to 时，最多读入内存用于展示的图片字节数。 */
-private const val IMAGE_INLINE_MAX_BYTES = 12 * 1024 * 1024
+/** 嗅探响应文件头（magic bytes）以识别图片时读取的字节数。 */
+private const val IMAGE_SNIFF_BYTES = 16
 
 /** 常见图片后缀，用于判断下载文件名是否需要补扩展名。 */
 private val IMAGE_EXTENSIONS = setOf(
@@ -70,14 +70,14 @@ internal fun buildHttpTool(allowedDomains: List<String>): Tool = Tool(
         - url 必填，必须带 http:// 或 https:// 前缀
         - method 默认 GET；POST/PUT/PATCH 等可传 body 作为请求体
         - headers 传自定义请求头，例如 {"Authorization":"Bearer sk-xxx","Content-Type":"application/json"}
-        - 响应默认按文本读取，二进制可用 response_encoding=base64；max_bytes 限制读取长度
+        - 响应默认按文本读取，二进制可用 response_encoding=base64；max_bytes 限制读入内存的长度（响应为图片时会自动流式落盘，不受此限制）
         下载文件（图片 / 视频 / 音频 / 模型 / 软件包等任意大文件）：
         - 传 save_to 指定本机保存路径即可，响应体会以流式写入磁盘，不受 max_bytes 限制，可下载任意大小
         - save_to 以 / 结尾或指向一个已存在的目录时，会自动按响应头或 URL 推断文件名
         - 路径支持绝对路径、相对路径（相对 /sdcard）、以及 ~ 与 /sdcard 前缀；父目录会自动创建
         - 若返回 SAVE_FAILED，通常是缺少“所有文件访问权限”，请到系统设置授予后再试
         展示图片：
-        - 若响应本身是图片（Content-Type 为 image/*），无需手动转 base64，工具会直接把图片渲染到对话里给用户看
+        - 若响应本身是图片（Content-Type 为 image/*），无需手动转 base64，也无需担心大小，工具会以流式落盘并把图片渲染到对话里给用户看
         - 用户说“把图发给我 / 给我看看这张图”时，直接 GET 该图片地址即可，不要用 base64 文本回复
         该助手可能配置了域名白名单：命中白名单之外的域名会返回 NOT_ALLOWED，此时应把当前允许的域名告诉用户，
         请用户到「助手设置 → 本地工具 → 网络请求」里放行，不要反复重试同一个域名。
@@ -124,7 +124,7 @@ internal fun buildHttpTool(allowedDomains: List<String>): Tool = Tool(
                 })
                 put("max_bytes", buildJsonObject {
                     put("type", "integer")
-                    put("description", "读入内存的响应字节上限，默认 524288，最大 33554432；用 save_to 下载文件时不受此限制。")
+                    put("description", "读入内存的响应字节上限，默认 524288，不设硬上限；图片响应与 save_to 下载均不受此限制。")
                 })
                 put("follow_redirects", buildJsonObject {
                     put("type", "boolean")
@@ -175,7 +175,7 @@ private fun runHttpRequest(params: JsonObject, allowedDomains: List<String>): Li
 
     val timeout = (params.intOrNull("timeout_seconds") ?: DEFAULT_TIMEOUT_SECONDS)
         .coerceIn(1, MAX_TIMEOUT_SECONDS)
-    val maxBytes = (params.intOrNull("max_bytes") ?: DEFAULT_MAX_BYTES).coerceIn(1, HARD_MAX_BYTES)
+    val maxBytes = (params.intOrNull("max_bytes") ?: DEFAULT_MAX_BYTES).coerceAtLeast(1)
     val followRedirects = params.boolOrNull("follow_redirects") ?: true
     val headers = params.headersOrNull()
 
@@ -241,21 +241,26 @@ private fun runHttpRequest(params: JsonObject, allowedDomains: List<String>): Li
                 )
             }
 
-            // 预判为图片时放宽读取上限，避免默认 512KB 把图片截断成“空白”
-            val readCap = if (maybeImage) maxOf(maxBytes, IMAGE_INLINE_MAX_BYTES) else maxBytes
-            val bytes = response.body.byteStream().use { readCappedBytes(it, readCap) }
             val declaredSize = response.body.contentLength()
+
+            // 只读文件头做 magic bytes 嗅探；图片直接流式落盘，任意大小都不会被截断，也不会撑爆内存
+            val buffered = BufferedInputStream(response.body.byteStream())
+            val sniffedImageMime = sniffImageMime(peekHead(buffered, IMAGE_SNIFF_BYTES))
 
             // 图片响应：无需转 base64，直接把图片渲染到对话里给用户看
             // 除 Content-Type / URL 后缀外，再用文件头（magic bytes）兜底识别
-            val sniffedImageMime = sniffImageMime(bytes)
             if (maybeImage || sniffedImageMime != null) {
                 val mime = sniffedImageMime
                     ?: imageMimeFromContentType(contentTypeHeader)
                     ?: imageMimeFromUrl(url)
                     ?: "image/png"
-                return@use imageResultParts(url, response, method, elapsed, mime, bytes)
+                val stored = buffered.use {
+                    storeImageStreaming(it, mime, imageFileName(url, response, mime))
+                }
+                return@use imageResultParts(url, response, method, elapsed, mime, stored)
             }
+
+            val bytes = buffered.use { readCappedBytes(it, maxBytes) }
 
             val asBase64 = when (params.stringOrNull("response_encoding")?.lowercase()) {
                 "base64" -> true
@@ -345,8 +350,8 @@ private fun downloadResultParts(
 }
 
 /**
- * 未指定 save_to 的图片响应：读入内存后落一份到本机并直接在对话中展示给用户。
- * 依次尝试外部存储下载目录、应用内部缓存，最后退化为内联 data URI，确保图片一定能显示。
+ * 未指定 save_to 的图片响应：以流式落盘方式保存到本机并直接在对话中展示给用户，
+ * 因此不受内存限制，再大的图片也能完整展示、不会截断。
  */
 private fun imageResultParts(
     url: HttpUrl,
@@ -354,11 +359,8 @@ private fun imageResultParts(
     method: String,
     elapsed: Long,
     mime: String,
-    bytes: ByteArray,
+    stored: StoredImage,
 ): List<UIMessagePart> {
-    val declaredSize = response.body.contentLength()
-    val truncated = declaredSize >= 0 && bytes.size.toLong() < declaredSize
-    val imageUrl = persistImageForDisplay(bytes, mime, imageFileName(url, response, mime))
     val json = buildJsonObject {
         put("url", url.toString())
         put("final_url", response.request.url.toString())
@@ -367,14 +369,50 @@ private fun imageResultParts(
         put("message", response.message)
         put("elapsed_ms", elapsed)
         put("content_type", mime)
-        put("size", bytes.size.toLong())
-        put("truncated", truncated)
+        put("size", stored.size)
+        put("truncated", false)
         put("image_shown", true)
-        if (truncated) {
-            put("hint", "图片较大已截断，如需完整保存请传 save_to 指定本机路径。")
-        }
     }.toString()
-    return listOf(UIMessagePart.Text(json), UIMessagePart.Image(imageUrl))
+    return listOf(UIMessagePart.Text(json), UIMessagePart.Image(stored.url))
+}
+
+/** 图片落盘结果：可直接渲染的地址与完整字节数。 */
+private data class StoredImage(val url: String, val size: Long)
+
+/**
+ * 把图片流式写入本机，返回展示地址与字节数。
+ * 优先外部下载目录；不可写时退回内存方式（少量兜底场景）。
+ */
+private fun storeImageStreaming(input: InputStream, mime: String, name: String): StoredImage {
+    val dir = resolvePath(DEFAULT_IMAGE_DIR)
+    if (dir != null) {
+        val external = runCatching {
+            // 加时间戳前缀，避免不同图片同名互相覆盖
+            val file = File(dir, "${System.currentTimeMillis()}_$name")
+            file.parentFile?.mkdirs()
+            file.outputStream().use { input.copyTo(it, STREAM_BUFFER_BYTES) }
+            file
+        }.getOrNull()
+        if (external != null && external.length() > 0) {
+            return StoredImage("file://${external.absolutePath}", external.length())
+        }
+    }
+    val bytes = runCatching { input.readBytes() }.getOrDefault(ByteArray(0))
+    return StoredImage(persistImageForDisplay(bytes, mime, name), bytes.size.toLong())
+}
+
+/** 读取文件头若干字节后回退流位置，用于 magic bytes 嗅探。 */
+private fun peekHead(input: BufferedInputStream, count: Int): ByteArray {
+    input.mark(count)
+    val head = ByteArray(count)
+    var read = 0
+    while (read < count) {
+        val n = input.read(head, read, count - read)
+        if (n <= 0) break
+        read += n
+    }
+    input.reset()
+    return head.copyOf(read)
 }
 
 /** 把图片字节持久化到本机，返回可直接渲染的地址。 */

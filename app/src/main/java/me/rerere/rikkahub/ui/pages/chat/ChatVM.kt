@@ -260,6 +260,12 @@ class ChatVM(
         chatService.regenerateAtMessage(_conversationId, message, regenerateAssistantMsg)
     }
 
+    /** 继续生成：从被中断/异常结束的半截回复处接着输出。 */
+    fun continueGeneration() {
+        analytics.logEvent("ai_continue_generation", null)
+        chatService.continueGeneration(_conversationId)
+    }
+
     fun handleToolApproval(
         toolCallId: String,
         approved: Boolean,

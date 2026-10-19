@@ -43,7 +43,6 @@ private val DESTRUCTIVE_ACTIONS = setOf("extract", "disasm", "asm", "replace", "
 
 private const val DEFAULT_LIST_LIMIT = 300
 private const val DEFAULT_READ_BYTES = 512 * 1024
-private const val HARD_READ_BYTES = 8 * 1024 * 1024
 private const val DEFAULT_SMALI_LIMIT = 200
 
 /** baksmali 2.5.2 支持的最高 ART 版本对应 Android 11（API 30），再高会饱和，因此固定用它以覆盖全部已知指令。 */
@@ -154,7 +153,7 @@ internal fun buildApkTool(context: Context): Tool = Tool(
                 })
                 put("max_bytes", buildJsonObject {
                     put("type", "integer")
-                    put("description", "read 时最多读取的字节数，默认 524288。")
+                    put("description", "read 时最多读取的字节数，默认 524288，不设硬上限。")
                 })
                 put("keystore", buildJsonObject {
                     put("type", "string")
@@ -284,12 +283,17 @@ private fun actionRead(params: JsonObject): String {
     val name = params.stringOrNull("entry")?.trim()
     if (name.isNullOrBlank()) return errorJson("MISSING_ENTRY", "entry is required")
 
-    val maxBytes = (params.intOrNull("max_bytes") ?: DEFAULT_READ_BYTES).coerceIn(1, HARD_READ_BYTES)
+    val maxBytes = (params.intOrNull("max_bytes") ?: DEFAULT_READ_BYTES).coerceAtLeast(1)
     return ZipFile(apk).use { zip ->
         val entry = zip.getEntry(name) ?: return errorJson("ENTRY_NOT_FOUND", "APK 内不存在该条目：$name")
         if (entry.isDirectory) return errorJson("IS_DIRECTORY", "目标是目录：$name")
-        val bytes = zip.getInputStream(entry).use { input -> readCapped(input, maxBytes) }
         val total = entry.size
+        // 读取上限取 max_bytes 与实际条目大小的较小值，既不受硬上限限制，也不会超额分配内存
+        val readLimit = minOf(maxBytes.toLong(), total.takeIf { it >= 0 } ?: maxBytes.toLong())
+            .coerceAtMost(Int.MAX_VALUE.toLong())
+            .toInt()
+            .coerceAtLeast(1)
+        val bytes = zip.getInputStream(entry).use { input -> readCapped(input, readLimit) }
 
         buildJsonObject {
             put("path", apk.absolutePath)

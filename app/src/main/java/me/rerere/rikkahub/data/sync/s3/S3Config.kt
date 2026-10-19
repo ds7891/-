@@ -12,7 +12,8 @@ data class S3Config(
     val pathStyle: Boolean = true,
     val items: List<BackupItem> = listOf(
         BackupItem.DATABASE,
-        BackupItem.FILES
+        BackupItem.FILES,
+        BackupItem.SUB_AGENTS,
     ),
 ) {
     val host: String
@@ -37,5 +38,7 @@ data class S3Config(
     enum class BackupItem {
         DATABASE,
         FILES,
+        MEDIA,
+        SUB_AGENTS,
     }
 }

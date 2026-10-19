@@ -1,6 +1,7 @@
 package me.rerere.rikkahub.di
 
 import android.content.Context
+import android.os.Environment
 import me.rerere.rikkahub.data.files.FileFolders
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.files.SkillManager
@@ -67,6 +68,16 @@ val repositoryModule = module {
                 WorkspaceBindMount(
                     source = File(context.filesDir, FileFolders.UPLOAD).apply { mkdirs() },
                     target = "/upload",
+                ),
+                // 外部存储：把内部共享存储挂进工作区, 让 workspace 文件工具与 shell
+                // 也能直接访问 /sdcard 与 /storage/emulated/0（读写仍需系统"所有文件访问权限"）。
+                WorkspaceBindMount(
+                    source = Environment.getExternalStorageDirectory(),
+                    target = "/sdcard",
+                ),
+                WorkspaceBindMount(
+                    source = Environment.getExternalStorageDirectory(),
+                    target = "/storage/emulated/0",
                 ),
             ),
         )

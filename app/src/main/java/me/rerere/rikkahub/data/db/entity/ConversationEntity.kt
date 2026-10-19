@@ -32,4 +32,7 @@ data class ConversationEntity(
     val workspaceCwd: String = "",
     @ColumnInfo("folder_id", defaultValue = "")
     val folderId: String = "",
+    // 「上下文消耗」面板的自定义参考窗口（token 数），NULL 表示使用模型源数据或默认值
+    @ColumnInfo("context_reference_window")
+    val contextReferenceWindow: Int? = null,
 )

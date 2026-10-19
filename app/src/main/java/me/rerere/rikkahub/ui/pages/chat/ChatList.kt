@@ -54,6 +54,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.surfaceColorAtElevation
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -99,6 +100,7 @@ import me.rerere.rikkahub.ui.components.ui.ErrorCardsDisplay
 import me.rerere.rikkahub.ui.components.ui.ListSelectableItem
 import me.rerere.rikkahub.ui.components.ui.RabbitLoadingIndicator
 import me.rerere.rikkahub.ui.components.ui.Tooltip
+import me.rerere.rikkahub.ui.context.LocalConversationMessages
 import me.rerere.rikkahub.ui.hooks.ImeLazyListAutoScroller
 import me.rerere.rikkahub.ui.theme.ChatFontProvider
 import me.rerere.rikkahub.utils.plus
@@ -123,8 +125,10 @@ fun ChatList(
     onDismissError: (Uuid) -> Unit = {},
     onClearAllErrors: () -> Unit = {},
     onRegenerate: (UIMessage) -> Unit = {},
+    onContinue: () -> Unit = {},
     onEdit: (UIMessage) -> Unit = {},
     onForkMessage: (UIMessage) -> Unit = {},
+    onQuoteMessage: (UIMessage) -> Unit = {},
     onDelete: (UIMessage) -> Unit = {},
     onUpdateMessage: (MessageNode) -> Unit = {},
     onClickSuggestion: (String) -> Unit = {},
@@ -165,8 +169,10 @@ fun ChatList(
                 onDismissError = onDismissError,
                 onClearAllErrors = onClearAllErrors,
                 onRegenerate = onRegenerate,
+                onContinue = onContinue,
                 onEdit = onEdit,
                 onForkMessage = onForkMessage,
+                onQuoteMessage = onQuoteMessage,
                 onDelete = onDelete,
                 onUpdateMessage = onUpdateMessage,
                 onClickSuggestion = onClickSuggestion,
@@ -195,8 +201,10 @@ private fun ChatListNormal(
     onDismissError: (Uuid) -> Unit,
     onClearAllErrors: () -> Unit,
     onRegenerate: (UIMessage) -> Unit,
+    onContinue: () -> Unit,
     onEdit: (UIMessage) -> Unit,
     onForkMessage: (UIMessage) -> Unit,
+    onQuoteMessage: (UIMessage) -> Unit,
     onDelete: (UIMessage) -> Unit,
     onUpdateMessage: (MessageNode) -> Unit,
     onClickSuggestion: (String) -> Unit,
@@ -270,6 +278,11 @@ private fun ChatListNormal(
     }
     val lastMessageIndex = conversation.messageNodes.lastIndex
 
+    // 供子智能体卡片汇总"本对话累计消耗"
+    val conversationMessages = remember(conversation.messageNodes) {
+        conversation.messageNodes.map { it.currentMessage }
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize(),
@@ -316,6 +329,7 @@ private fun ChatListNormal(
                 items = conversation.messageNodes,
                 key = { index, item -> item.id },
             ) { index, node ->
+                CompositionLocalProvider(LocalConversationMessages provides conversationMessages) {
                 Column {
                     ListSelectableItem(
                         key = node.id,
@@ -337,11 +351,15 @@ private fun ChatListNormal(
                             onRegenerate = {
                                 onRegenerate(node.currentMessage)
                             },
+                            onContinue = onContinue,
                             onEdit = {
                                 onEdit(node.currentMessage)
                             },
                             onFork = {
                                 onForkMessage(node.currentMessage)
+                            },
+                            onQuote = {
+                                onQuoteMessage(node.currentMessage)
                             },
                             onDelete = {
                                 onDelete(node.currentMessage)
@@ -366,6 +384,7 @@ private fun ChatListNormal(
                             lastMessage = index == lastMessageIndex,
                         )
                     }
+                }
                 }
             }
 

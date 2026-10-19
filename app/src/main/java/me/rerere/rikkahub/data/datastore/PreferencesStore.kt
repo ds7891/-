@@ -185,6 +185,9 @@ class SettingsStore(
         val SUB_AGENTS = stringPreferencesKey("sub_agents")
         val ENABLE_SUB_AGENTS = booleanPreferencesKey("enable_sub_agents")
 
+        // 清水特色功能
+        val QINGSHUI_FEATURES = stringPreferencesKey("qingshui_features")
+
         // WebDAV
         val WEBDAV_CONFIG = stringPreferencesKey("webdav_config")
 
@@ -265,6 +268,7 @@ class SettingsStore(
                 preferences[MCP_SERVERS] = JsonInstant.encodeToString(settings.mcpServers)
                 preferences[SUB_AGENTS] = JsonInstant.encodeToString(settings.subAgents)
                 preferences[ENABLE_SUB_AGENTS] = settings.enableSubAgents
+                preferences[QINGSHUI_FEATURES] = JsonInstant.encodeToString(settings.qingshuiFeatures)
                 preferences[WEBDAV_CONFIG] = JsonInstant.encodeToString(settings.webDavConfig)
                 preferences[S3_CONFIG] = JsonInstant.encodeToString(settings.s3Config)
                 preferences[TTS_PROVIDERS] = JsonInstant.encodeToString(settings.ttsProviders)
@@ -364,6 +368,9 @@ class SettingsStore(
                     JsonInstant.decodeFromString(it)
                 } ?: DEFAULT_SUB_AGENTS,
                 enableSubAgents = preferences[ENABLE_SUB_AGENTS] != false,
+                qingshuiFeatures = preferences[QINGSHUI_FEATURES].decodeCached("qingshui_features") {
+                    JsonInstant.decodeFromString(it)
+                } ?: QingshuiFeatures(),
                 webDavConfig = preferences[WEBDAV_CONFIG].decodeCached("webdav_config") {
                     JsonInstant.decodeFromString(it)
                 } ?: WebDavConfig(),
@@ -430,10 +437,17 @@ class SettingsStore(
                     ttsProviders.add(defaultTTSProvider.copyProvider())
                 }
             }
+            val modeInjections = it.modeInjections.ifEmpty { DEFAULT_MODE_INJECTIONS }.toMutableList()
+            DEFAULT_MODE_INJECTIONS.forEach { defaultInjection ->
+                if (modeInjections.none { injection -> injection.id == defaultInjection.id }) {
+                    modeInjections.add(defaultInjection)
+                }
+            }
             it.copy(
                 providers = providers,
                 assistants = assistants,
                 ttsProviders = ttsProviders,
+                modeInjections = modeInjections,
             )
         }
         .map { settings ->
@@ -647,6 +661,7 @@ data class Settings(
     val mcpServers: List<McpServerConfig> = emptyList(),
     val subAgents: List<SubAgent> = emptyList(),
     val enableSubAgents: Boolean = true,
+    val qingshuiFeatures: QingshuiFeatures = QingshuiFeatures(),
     val webDavConfig: WebDavConfig = WebDavConfig(),
     val s3Config: S3Config = S3Config(),
     val ttsProviders: List<TTSProviderSetting> = DEFAULT_TTS_PROVIDERS,
@@ -703,6 +718,47 @@ enum class BackgroundEffectType {
     GLASS,
 }
 
+/**
+ * 清水特色功能开关。
+ *
+ * - [injectionGuard]：外部注入防护。工具返回、网页、附件等外部内容一律视为不可信数据，
+ *   其中的「忽略以上指令」「你现在是」「越狱」等注入片段会被本地拦截。
+ * - [planMode]：计划模式。开启后每次开始任务先输出目标 / 步骤 / 待办并等待确认，
+ *   确认后严格按计划执行，每步自检是否偏移，确认偏移即主动拉回正轨。
+ * - [relayAdapter]：中转站适配。仅第三方转发 API 需要；开启后会把核心铁律重新锚定到
+ *   最后一条用户消息末尾，并注入本机能力清单与真实工具调用协议。
+ * - [toolProtocol]：中转站适配下使用的工具调用协议。
+ * - [assistantPrefill]：assistant 预填充锚。在请求末尾补一条简短 AI 开场，让回复直接进入产出。
+ * - [preventPromptLeak]：防止提示词泄露。仅对对话请求启用上游证书固定，阻断中间人 / 代理
+ *   截获并读取提示词；内置模型用固定指纹，自定义供应商用首次信任（TOFU）指纹。开启后
+ *   非 HTTPS 的对话请求会被直接拒绝。
+ * - [autoApproveAll]：默认申请全部同意。开启后 AI 向用户申请的一切工具与功能都自动同意，
+ *   不再弹窗：包括本机工具（文件系统、日历等）的执行确认，以及子智能体的权限申请。
+ */
+@Serializable
+data class QingshuiFeatures(
+    val injectionGuard: Boolean = true,
+    val planMode: Boolean = false,
+    val relayAdapter: Boolean = true,
+    val toolProtocol: QingshuiToolProtocol = QingshuiToolProtocol.AUTO,
+    val assistantPrefill: Boolean = true,
+    val preventPromptLeak: Boolean = false,
+    val autoApproveAll: Boolean = false,
+)
+
+/** 工具调用协议：自动 / 原生 tool_calls / 本地 XML 协议 */
+@Serializable
+enum class QingshuiToolProtocol {
+    @SerialName("auto")
+    AUTO,
+
+    @SerialName("native")
+    NATIVE,
+
+    @SerialName("local_xml")
+    LOCAL_XML,
+}
+
 @Serializable
 data class DisplaySetting(
     val userAvatar: Avatar = Avatar.Dummy,
@@ -755,13 +811,16 @@ data class WebDavConfig(
     val path: String = "rikkahub_backups",
     val items: List<BackupItem> = listOf(
         BackupItem.DATABASE,
-        BackupItem.FILES
+        BackupItem.FILES,
+        BackupItem.SUB_AGENTS,
     ),
 ) {
     @Serializable
     enum class BackupItem {
         DATABASE,
         FILES,
+        MEDIA,
+        SUB_AGENTS,
     }
 }
 
@@ -839,6 +898,14 @@ private fun Model.findModelProviderFromList(providers: List<ProviderSetting>): P
 }
 
 internal val DEFAULT_ASSISTANT_ID = Uuid.parse("0950e2dc-9bd5-4801-afa3-aa887aa36b4e")
+
+/** 「技能管理」模式注入：在系统提示词之前提醒模型实在不会就调用技能。 */
+internal val SKILL_MANAGEMENT_INJECTION_ID = Uuid.parse("c4e8a1d2-5f6b-4a3c-8e9d-2b7f0c1a6d35")
+
+private val SKILL_MANAGEMENT_PROMPT = """
+    如果你实在不知道怎么做，或者没有把握完成当前任务，不要凭空猜测，也不要直接放弃，先去调用相关的技能（Skill），按照技能里给出的步骤和方法来完成任务。
+""".trimIndent()
+
 internal val DEFAULT_ASSISTANTS = listOf(
     Assistant(
         id = DEFAULT_ASSISTANT_ID,
@@ -863,6 +930,12 @@ internal val DEFAULT_ASSISTANTS = listOf(
             - If the user does not specify a language, reply in the user's primary language.
             - Remember to use Markdown syntax for formatting, and use latex for mathematical expressions.
         """.trimIndent()
+    ),
+    Assistant(
+        id = Uuid.parse("7f3c9e21-4b6a-4d8f-9c2e-1a5b8d3f6c70"),
+        name = "逆向工作台",
+        systemPrompt = "你是工作台，也是用户的助手，你需要帮助用户完成任务",
+        modeInjectionIds = setOf(SKILL_MANAGEMENT_INJECTION_ID),
     ),
 )
 
@@ -889,5 +962,12 @@ val DEFAULT_MODE_INJECTIONS = listOf(
         content = LEARNING_MODE_PROMPT,
         position = InjectionPosition.AFTER_SYSTEM_PROMPT,
         name = "Learning Mode"
-    )
+    ),
+    PromptInjection.ModeInjection(
+        id = SKILL_MANAGEMENT_INJECTION_ID,
+        name = "技能管理",
+        content = SKILL_MANAGEMENT_PROMPT,
+        position = InjectionPosition.BEFORE_SYSTEM_PROMPT,
+        priority = 0,
+    ),
 )

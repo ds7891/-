@@ -25,6 +25,8 @@ data class UIMessage(
     val modelId: Uuid? = null,
     val usage: TokenUsage? = null,
     val translation: String? = null,
+    /** 上游返回的结束原因（如 stop / length / tool_calls），用于识别被输出上限截断的回复。 */
+    val finishReason: String? = null,
     // 请求期间生成的内部消息；该标记仅在内存中使用
     @Transient
     val isSynthetic: Boolean = false,

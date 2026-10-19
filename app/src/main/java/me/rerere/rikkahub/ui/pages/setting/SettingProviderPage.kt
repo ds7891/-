@@ -10,6 +10,7 @@ import me.rerere.hugeicons.stroke.Add01
 import me.rerere.hugeicons.stroke.Search01
 import me.rerere.hugeicons.stroke.Sparkles
 import me.rerere.hugeicons.stroke.Cancel01
+import me.rerere.hugeicons.stroke.Cpu
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -68,6 +69,8 @@ import io.github.g00fy2.quickie.ScanQRCode
 import me.rerere.ai.provider.ProviderSetting
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.Screen
+import me.rerere.rikkahub.data.builtin.BuiltinModelRepository
+import me.rerere.rikkahub.data.builtin.BuiltinModels
 import me.rerere.rikkahub.data.datastore.RECOMMENDED_PROVIDERS
 import me.rerere.rikkahub.ui.components.nav.BackButton
 import me.rerere.rikkahub.ui.components.ui.AutoAIIcon
@@ -86,6 +89,7 @@ import me.rerere.rikkahub.ui.theme.CustomColors
 import me.rerere.rikkahub.utils.ImageUtils
 import me.rerere.rikkahub.utils.plus
 import org.koin.androidx.compose.koinViewModel
+import org.koin.compose.koinInject
 import sh.calvin.reorderable.ReorderableItem
 import sh.calvin.reorderable.rememberReorderableLazyListState
 import kotlin.uuid.Uuid
@@ -125,6 +129,7 @@ fun SettingProviderPage(vm: SettingVM = koinViewModel()) {
                     BackButton()
                 },
                 actions = {
+                    BuiltinModelButton()
                     RecommendProviderButton { provider ->
                         vm.updateSettings(
                             settings.copy(
@@ -143,6 +148,13 @@ fun SettingProviderPage(vm: SettingVM = koinViewModel()) {
                         vm.updateSettings(
                             settings.copy(
                                 providers = listOf(it) + settings.providers
+                            )
+                        )
+                    }
+                    AddBuiltinModelButton { provider ->
+                        vm.updateSettings(
+                            settings.copy(
+                                providers = listOf(provider) + settings.providers
                             )
                         )
                     }
@@ -582,6 +594,40 @@ private fun AddButton(onAdd: (ProviderSetting) -> Unit) {
                 }
             },
         )
+    }
+}
+
+@Composable
+private fun BuiltinModelButton() {
+    val navController = LocalNavController.current
+    TextButton(onClick = { navController.navigate(Screen.SettingBuiltinModel) }) {
+        Text("内置模型")
+    }
+}
+
+@Composable
+private fun AddBuiltinModelButton(onAdd: (ProviderSetting) -> Unit) {
+    val repository = koinInject<BuiltinModelRepository>()
+    val state by repository.state.collectAsStateWithLifecycle()
+    val toaster = LocalToaster.current
+
+    IconButton(
+        onClick = {
+            onAdd(
+                ProviderSetting.OpenAI(
+                    name = "内置模型",
+                    baseUrl = state.endpoint,
+                    apiKey = "",
+                    models = BuiltinModels.toProviderModels(state.models),
+                )
+            )
+            toaster.show(
+                "已添加内置模型供应商，请在「内置模型」页面复制 API 密钥填入",
+                type = ToastType.Success,
+            )
+        }
+    ) {
+        Icon(HugeIcons.Cpu, contentDescription = "添加内置模型")
     }
 }
 

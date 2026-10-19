@@ -24,5 +24,9 @@ data class GenMediaEntity(
     companion object {
         const val TYPE_IMAGE_GENERATION = "image_generation"
         const val TYPE_IMAGE_EDIT = "image_edit"
+        const val TYPE_VIDEO_GENERATION = "video_generation"
+
+        /** 图片类记录（用于图像生成相册过滤）。 */
+        val IMAGE_TYPES = listOf(TYPE_IMAGE_GENERATION, TYPE_IMAGE_EDIT)
     }
 }

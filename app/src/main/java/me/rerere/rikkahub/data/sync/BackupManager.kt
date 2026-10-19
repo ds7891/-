@@ -34,15 +34,21 @@ class BackupManager(
 ) {
     private val restoreMutex = Mutex()
 
-    suspend fun createBackup(includeDatabase: Boolean, includeFiles: Boolean): File = withContext(Dispatchers.IO) {
+    suspend fun createBackup(
+        includeDatabase: Boolean,
+        includeFiles: Boolean,
+        includeMedia: Boolean,
+        includeSubAgents: Boolean,
+    ): File = withContext(Dispatchers.IO) {
         val timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"))
         val archive = File.createTempFile("backup_${timestamp}_", ".zip", context.cacheDir)
         val staging = Files.createTempDirectory(context.cacheDir.toPath(), "backup-").toFile()
         try {
             val settings = settingsStore.settingsFlowRaw.first()
+            val exportedSettings = if (includeSubAgents) settings else settings.copy(subAgents = emptyList())
             ZipOutputStream(FileOutputStream(archive)).use { zip ->
                 zip.putNextEntry(ZipEntry("settings.json"))
-                zip.write(json.encodeToString(settings).toByteArray(Charsets.UTF_8))
+                zip.write(json.encodeToString(exportedSettings).toByteArray(Charsets.UTF_8))
                 zip.closeEntry()
                 if (includeDatabase) {
                     val snapshot = File(staging, SQLiteConfiguration.DATABASE_NAME)
@@ -62,6 +68,17 @@ class BackupManager(
                         }
                     }
                 }
+                if (includeMedia) {
+                    for (folder in MEDIA_FOLDERS) {
+                        val directory = File(context.filesDir, folder)
+                        for (file in directory.listFiles().orEmpty().asSequence().filter { it.isFile }) {
+                            currentCoroutineContext().ensureActive()
+                            val relative = file.relativeTo(directory).invariantSeparatorsPath
+                            PendingRestore.resolveInside(directory, relative)
+                            addFile(zip, file, "$folder/$relative")
+                        }
+                    }
+                }
             }
             archive
         } catch (e: Throwable) {
@@ -72,7 +89,13 @@ class BackupManager(
         }
     }
 
-    suspend fun stageRestore(archive: File, includeDatabase: Boolean, includeFiles: Boolean) =
+    suspend fun stageRestore(
+        archive: File,
+        includeDatabase: Boolean,
+        includeFiles: Boolean,
+        includeMedia: Boolean,
+        includeSubAgents: Boolean,
+    ) =
         withContext(Dispatchers.IO) {
             restoreMutex.withLock {
                 val restore = pendingRestore(context)
@@ -92,9 +115,13 @@ class BackupManager(
                                 DatabaseBackup.ARCHIVE_DATABASE -> if (includeDatabase) stagedDatabase else null
                                 DatabaseBackup.WAL -> if (includeDatabase) stagedWal else null
                                 DatabaseBackup.SHM -> null // Rebuilt by SQLite; never restore shared-memory state.
-                                else -> if (includeFiles && isAttachment(entry.name)) {
-                                    PendingRestore.resolveInside(File(payload, "files"), entry.name)
-                                } else null
+                                else -> when {
+                                    includeFiles && isAttachment(entry.name) ->
+                                        PendingRestore.resolveInside(File(payload, "files"), entry.name)
+                                    includeMedia && isMedia(entry.name) ->
+                                        PendingRestore.resolveInside(File(payload, "files"), entry.name)
+                                    else -> null
+                                }
                             } ?: continue
                             require(seen.add(entry.name)) { "Duplicate backup entry: ${entry.name}" }
                             check(target.parentFile!!.isDirectory || target.parentFile!!.mkdirs()) {
@@ -127,8 +154,18 @@ class BackupManager(
                     if (settingsFile.exists()) {
                         val settings = json.decodeFromString<Settings>(SettingsJsonMigrator.migrate(settingsFile.readText()))
                         require(!settings.init) { "Backup contains uninitialized settings" }
+                        // Only overwrite sub-agents when the backup carries them and the user opted in;
+                        // otherwise keep the current configuration instead of wiping it.
+                        val restoredSubAgents = if (includeSubAgents && settings.subAgents.isNotEmpty()) {
+                            settings.subAgents
+                        } else {
+                            settingsStore.settingsFlowRaw.first().subAgents
+                        }
                         // Persist the migrated value once, including generated IDs, for restart/retry consistency.
-                        PendingRestore.writeDurably(settingsFile, json.encodeToString(settings))
+                        PendingRestore.writeDurably(
+                            settingsFile,
+                            json.encodeToString(settings.copy(subAgents = restoredSubAgents)),
+                        )
                     }
                     currentCoroutineContext().ensureActive()
                     restore.publish(staging)
@@ -147,6 +184,15 @@ class BackupManager(
         return true
     }
 
+    private fun isMedia(name: String): Boolean {
+        val folder = name.substringBefore('/')
+        if (folder !in MEDIA_FOLDERS || '/' !in name) return false
+        val relative = name.substringAfter('/')
+        require(relative.isNotBlank()) { "Invalid backup media: $name" }
+        require('/' !in relative) { "Invalid backup media: $name" }
+        return true
+    }
+
     private fun addFile(zip: ZipOutputStream, file: File, name: String) {
         zip.putNextEntry(ZipEntry(name))
         file.inputStream().use { it.copyTo(zip) }
@@ -154,6 +200,8 @@ class BackupManager(
     }
 
     companion object {
+        private val MEDIA_FOLDERS = listOf(FileFolders.IMAGES, FileFolders.VIDEOS)
+
         private fun pendingRestore(context: Context) = PendingRestore(
             root = File(context.noBackupFilesDir, "backup-restore"),
             databaseFile = context.getDatabasePath(SQLiteConfiguration.DATABASE_NAME),

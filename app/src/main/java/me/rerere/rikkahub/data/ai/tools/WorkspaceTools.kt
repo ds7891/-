@@ -1,5 +1,6 @@
 package me.rerere.rikkahub.data.ai.tools
 
+import android.content.Context
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.JsonObjectBuilder
@@ -14,6 +15,7 @@ import me.rerere.ai.ui.toMetadata
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.repository.WorkspaceRepository
 import me.rerere.rikkahub.utils.generateUnifiedDiff
+import me.rerere.rikkahub.utils.hasAllFilesAccess
 import me.rerere.workspace.WorkspaceCommandResult
 import me.rerere.workspace.WorkspaceFileEntry
 import me.rerere.workspace.WorkspaceManager
@@ -21,7 +23,9 @@ import org.koin.java.KoinJavaComponent.getKoin
 import java.io.ByteArrayOutputStream
 
 private const val SHELL_TIMEOUT_MAX_SECONDS = 600L
-private const val MAX_READ_FILE_BYTES = 8L * 1024 * 1024
+
+/** 读取工作区文件时允许的内存预分配上限：不影响可读文件大小，只避免为超大文件一次性预留过多内存。 */
+private const val MAX_READ_PREALLOC_BYTES = 16L * 1024 * 1024
 
 val WorkspaceToolDefaultApprovals: Map<String, Boolean> = mapOf(
     "workspace_read_file" to false,
@@ -68,6 +72,8 @@ private fun createReadFileTool(
     description = """
         Read a file using the assistant's bound workspace Rootfs. Paths must be absolute inside Rootfs.
         Use /workspace for the workspace files area.
+        External storage is mounted too: /sdcard and /storage/emulated/0 (same device storage) can be read
+        directly as long as the system "All files access" permission is granted.
         Supports UTF-8 text files and image files (png, jpg, jpeg, gif, webp, bmp, svg, heic, heif, avif, ico).
     """.trimIndent().replace("\n", " "),
     parameters = {
@@ -80,7 +86,7 @@ private fun createReadFileTool(
     },
     needsApproval = { needsApproval("workspace_read_file") },
     execute = {
-        val path = it.jsonObject.absolutePath("path")
+        val path = it.jsonObject.absoluteRootfsPath("path")
         if (path.isImagePath()) {
             workspaceRepository.readImageInRootfs(workspaceId, path)
         } else {
@@ -106,6 +112,8 @@ private fun createWriteFileTool(
     description = """
         Write a UTF-8 text file using the assistant's bound workspace Rootfs. Paths must be absolute inside Rootfs.
         Use /workspace for the workspace files area.
+        External storage (/sdcard, /storage/emulated/0) is writable too, but writing outside the workspace
+        requires user approval and the system "All files access" permission.
     """.trimIndent().replace("\n", " "),
     parameters = {
         InputSchema.Obj(
@@ -126,7 +134,7 @@ private fun createWriteFileTool(
     needsApproval = { needsApproval("workspace_write_file") || it.pathOutsideWritableRoots("path") },
     execute = {
         val params = it.jsonObject
-        val path = params.absolutePath("path")
+        val path = params.absoluteRootfsPath("path")
         val text = params.string("text") ?: error("text is required")
         val overwrite = params["overwrite"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() ?: true
         val entry = workspaceRepository.writeTextInRootfs(workspaceId, path, text, overwrite)
@@ -143,6 +151,8 @@ private fun createEditFileTool(
     description = """
         Edit a UTF-8 text file using the assistant's bound workspace Rootfs. Paths must be absolute inside Rootfs.
         Use /workspace for the workspace files area.
+        External storage (/sdcard, /storage/emulated/0) is editable too, but editing outside the workspace
+        requires user approval and the system "All files access" permission.
         Provide old_text and new_text. By default old_text must occur exactly once; set replace_all=true to replace every occurrence.
         If no exact match is found, whitespace-tolerant line matching is attempted automatically.
     """.trimIndent().replace("\n", " "),
@@ -169,7 +179,7 @@ private fun createEditFileTool(
     needsApproval = { needsApproval("workspace_edit_file") || it.pathOutsideWritableRoots("path") },
     execute = {
         val params = it.jsonObject
-        val path = params.absolutePath("path")
+        val path = params.absoluteRootfsPath("path")
         val oldText = params.string("old_text") ?: error("old_text is required")
         val newText = params.string("new_text") ?: error("new_text is required")
         val replaceAll = params["replace_all"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() ?: false
@@ -209,6 +219,7 @@ private fun createShellTool(
     name = "workspace_shell",
     description = buildString {
         append("Run a shell command in the assistant's bound workspace Rootfs. The workspace files area is mounted at /workspace. ")
+        append("External storage is mounted too: /sdcard and /storage/emulated/0 point at the device's shared storage. ")
         append("Use cwd for a path relative to the workspace files root. ")
         if (!defaultCwd.isNullOrBlank()) {
             append("Defaults to '$defaultCwd'. ")
@@ -286,10 +297,9 @@ private suspend fun WorkspaceRepository.readRootfsBuffer(
     path: String,
 ): ByteArrayOutputStream {
     val size = rootfsFileSize(workspaceId, path)
-    require(size <= MAX_READ_FILE_BYTES) {
-        "File is too large to read: $path (${size / 1024 / 1024}MB, max ${MAX_READ_FILE_BYTES / 1024 / 1024}MB). Use shell commands like head, tail, or grep to read parts of it."
-    }
-    return ByteArrayOutputStream(size.toInt()).also { exportRootfsFile(workspaceId, path, it) }
+    // 不再限制可读文件大小；仅约束预分配容量，避免为超大文件一次性预留过多内存，也避免 Long 转 Int 溢出
+    val initialCapacity = minOf(size, MAX_READ_PREALLOC_BYTES).coerceAtLeast(0L).toInt()
+    return ByteArrayOutputStream(initialCapacity).also { exportRootfsFile(workspaceId, path, it) }
 }
 
 private suspend fun WorkspaceRepository.readImageInRootfs(
@@ -401,6 +411,28 @@ private fun kotlinx.serialization.json.JsonObject.absolutePath(name: String): St
     require(path.isNotBlank()) { "$name is required" }
     require(path.startsWith("/")) { "$name must be an absolute path inside Rootfs" }
     require(!path.contains('\u0000')) { "$name contains invalid character" }
+    return path
+}
+
+// 外部存储路径前缀: 由 bind mount 映射到宿主机, 读写需要系统"所有文件访问权限"
+private val EXTERNAL_STORAGE_PREFIXES = listOf("/sdcard", "/storage/emulated/0")
+
+private fun String.isExternalStoragePath(): Boolean =
+    EXTERNAL_STORAGE_PREFIXES.any { this == it || startsWith("$it/") }
+
+/**
+ * 解析 Rootfs 内绝对路径; 命中外部存储时先校验"所有文件访问权限",
+ * 权限不足时给出明确、可操作的提示, 而不是抛出晦涩的 IO 错误。
+ */
+private fun kotlinx.serialization.json.JsonObject.absoluteRootfsPath(name: String): String {
+    val path = absolutePath(name)
+    if (path.isExternalStoragePath() && !getKoin().get<Context>().hasAllFilesAccess()) {
+        error(
+            "路径 $path 位于外部存储，但应用尚未获得\"所有文件访问权限\"。" +
+                "请在系统设置中为本应用开启该权限后重试；" +
+                "若只需要在工作区内操作，请改用 /workspace 下的路径。"
+        )
+    }
     return path
 }
 

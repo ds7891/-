@@ -335,3 +335,54 @@ fun Context.exportImageFile(
         outputStream?.close()
     }
 }
+
+/** 把视频文件保存到系统相册（Movies 目录）。 */
+fun Context.exportVideoFile(
+    activity: Activity,
+    file: File,
+    fileName: String = "清水_${System.currentTimeMillis()}.mp4"
+) {
+    // 检查存储权限（Android 9及以下需要）
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            ActivityCompat.requestPermissions(
+                activity,
+                arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE),
+                1
+            )
+            return
+        }
+    }
+
+    var outputStream: OutputStream? = null
+    try {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val contentValues = ContentValues().apply {
+                put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
+                put(MediaStore.MediaColumns.MIME_TYPE, "video/mp4")
+                put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_MOVIES)
+            }
+            val uri = contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, contentValues)
+            uri?.let {
+                outputStream = contentResolver.openOutputStream(it)
+                file.inputStream().copyTo(outputStream!!)
+            }
+        } else {
+            val moviesDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES)
+            if (!moviesDir.exists()) moviesDir.mkdirs()
+            val video = File(moviesDir, fileName)
+            file.copyTo(video, overwrite = true)
+
+            val mediaScanIntent = Intent(Intent.ACTION_MEDIA_SCANNER_SCAN_FILE)
+            mediaScanIntent.data = Uri.fromFile(video)
+            sendBroadcast(mediaScanIntent)
+        }
+        Log.i(TAG, "Video file saved successfully: $fileName")
+    } catch (e: Exception) {
+        Log.e(TAG, "Failed to save video file", e)
+    } finally {
+        outputStream?.close()
+    }
+}

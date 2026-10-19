@@ -1,12 +1,17 @@
 package me.rerere.rikkahub.ui.pages.stats
 
 import me.rerere.hugeicons.HugeIcons
+import me.rerere.hugeicons.stroke.ArrowDown01
+import me.rerere.hugeicons.stroke.ArrowUp01
 import me.rerere.hugeicons.stroke.ChartColumn
 import me.rerere.hugeicons.stroke.Cpu
 import me.rerere.hugeicons.stroke.Message01
 import me.rerere.hugeicons.stroke.Rocket01
 import me.rerere.hugeicons.stroke.Zap
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -33,6 +38,9 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -327,6 +335,193 @@ private fun StatsGrid(stats: AppStats, modifier: Modifier = Modifier) {
             label = stringResource(R.string.stats_page_launch_count),
             value = formatCount(stats.launchCount.toLong()),
         )
+        ProviderTokenUsageCard(providers = stats.providerTokenStats)
+    }
+}
+
+/** 供应商 -> 模型的 Token 消耗卡片，默认折叠；展开后可按供应商逐层查看。 */
+@Composable
+private fun ProviderTokenUsageCard(providers: List<ProviderTokenStat>) {
+    var expanded by rememberSaveable { mutableStateOf(false) }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CustomColors.cardColorsOnSurfaceContainer,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .animateContentSize(),
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { expanded = !expanded }
+                    .padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    imageVector = HugeIcons.Cpu,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(20.dp),
+                )
+                Spacer(Modifier.width(12.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = stringResource(R.string.stats_page_provider_usage_title),
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                    Text(
+                        text = if (providers.isEmpty()) {
+                            stringResource(R.string.stats_page_provider_usage_empty)
+                        } else {
+                            stringResource(
+                                R.string.stats_page_provider_usage_summary,
+                                providers.size,
+                                formatTokens(providers.sumOf { it.totalTokens }),
+                            )
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Icon(
+                    imageVector = if (expanded) HugeIcons.ArrowUp01 else HugeIcons.ArrowDown01,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+
+            AnimatedVisibility(visible = expanded) {
+                Column(
+                    modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 16.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    providers.forEach { provider ->
+                        ProviderUsageItem(provider = provider)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ProviderUsageItem(provider: ProviderTokenStat) {
+    var expanded by rememberSaveable(provider.providerId) { mutableStateOf(false) }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CustomColors.cardColors,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .animateContentSize(),
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { expanded = !expanded }
+                    .padding(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = provider.providerName.ifBlank {
+                            stringResource(R.string.stats_page_provider_unknown)
+                        },
+                        style = MaterialTheme.typography.bodyLarge,
+                    )
+                    Text(
+                        text = stringResource(
+                            R.string.stats_page_provider_models_summary,
+                            provider.models.size,
+                            formatTokens(provider.totalTokens),
+                        ),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Icon(
+                    imageVector = if (expanded) HugeIcons.ArrowUp01 else HugeIcons.ArrowDown01,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+
+            AnimatedVisibility(visible = expanded) {
+                Column(
+                    modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    provider.models.forEach { model ->
+                        ModelUsageItem(model = model)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ModelUsageItem(model: ModelTokenStat) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = model.modelName.ifBlank {
+                    stringResource(R.string.stats_page_model_unknown)
+                },
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.weight(1f),
+            )
+            Text(
+                text = formatTokens(model.totalTokens),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.primary,
+            )
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            UsageColumn(
+                modifier = Modifier.weight(1f),
+                label = stringResource(R.string.stats_page_usage_input),
+                value = formatTokens(model.promptTokens),
+            )
+            UsageColumn(
+                modifier = Modifier.weight(1f),
+                label = stringResource(R.string.stats_page_usage_output),
+                value = formatTokens(model.completionTokens),
+            )
+            UsageColumn(
+                modifier = Modifier.weight(1f),
+                label = stringResource(R.string.stats_page_usage_cached),
+                value = formatTokens(model.cachedTokens),
+            )
+        }
+        Text(
+            text = stringResource(R.string.stats_page_cache_hit, formatPercent(model.cacheHitRate)),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
+private fun UsageColumn(modifier: Modifier = Modifier, label: String, value: String) {
+    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+        )
+        Text(
+            text = value,
+            style = MaterialTheme.typography.bodyMedium,
+            maxLines = 1,
+        )
     }
 }
 
@@ -373,3 +568,5 @@ private fun formatTokens(count: Long): String = when {
     count >= 1_000 -> "%.1fK".format(count / 1_000.0)
     else -> count.toString()
 }
+
+private fun formatPercent(rate: Float): String = "%.0f%%".format(rate.coerceIn(0f, 1f) * 100)

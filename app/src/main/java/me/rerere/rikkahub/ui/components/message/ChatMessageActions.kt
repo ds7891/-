@@ -46,6 +46,7 @@ import me.rerere.hugeicons.stroke.Delete01
 import me.rerere.hugeicons.stroke.Edit01
 import me.rerere.hugeicons.stroke.FavouriteCircle
 import me.rerere.hugeicons.stroke.GitFork
+import me.rerere.hugeicons.stroke.MessageSquareQuote
 import me.rerere.hugeicons.stroke.MoreVertical
 import me.rerere.hugeicons.stroke.Refresh03
 import me.rerere.hugeicons.stroke.Share04
@@ -251,6 +252,7 @@ fun ChatMessageActionsSheet(
     onShare: () -> Unit,
     onFork: () -> Unit,
     onSelectAndCopy: () -> Unit,
+    onQuote: () -> Unit = {},
     isFavorite: Boolean = false,
     onToggleFavorite: (() -> Unit)? = null,
     onWebViewPreview: () -> Unit,
@@ -289,6 +291,33 @@ fun ChatMessageActionsSheet(
                     )
                     Text(
                         text = stringResource(R.string.select_and_copy),
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                }
+            }
+
+            // Quote: bring this output into the input box as a quote card
+            Card(
+                onClick = {
+                    onDismissRequest()
+                    onQuote()
+                },
+                shape = MaterialTheme.shapes.medium
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                    modifier = Modifier
+                        .padding(16.dp)
+                        .fillMaxWidth()
+                ) {
+                    Icon(
+                        imageVector = HugeIcons.MessageSquareQuote,
+                        contentDescription = null,
+                        modifier = Modifier.padding(4.dp)
+                    )
+                    Text(
+                        text = "引用卡片",
                         style = MaterialTheme.typography.titleMedium,
                     )
                 }

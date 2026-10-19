@@ -77,7 +77,7 @@ android {
         release {
             signingConfig = signingConfigs.getByName("release")
             optimization {
-                enable = true
+                enable = false
             }
             buildConfigField("String", "VERSION_NAME", "\"${android.defaultConfig.versionName}\"")
             buildConfigField("String", "VERSION_CODE", "\"${android.defaultConfig.versionCode}\"")
@@ -218,6 +218,9 @@ dependencies {
     implementation(libs.ktor.client.okhttp)
     implementation(libs.ktor.client.content.negotiation)
     implementation(libs.ktor.serialization.kotlinx.json)
+
+    // ktor server (内置模型本地反向代理)
+    implementation(libs.ktor.server.cors)
 
     // ucrop
     implementation(libs.ucrop)

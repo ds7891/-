@@ -69,7 +69,7 @@ class BackupManagerTest {
                 zip.closeEntry()
             }
         }
-        manager.stageRestore(archive, includeDatabase = true, includeFiles = false)
+        manager.stageRestore(archive, includeDatabase = true, includeFiles = false, includeMedia = false, includeSubAgents = false)
         assertEquals("live", probe(liveDatabase))
         val staged = File(context.noBackupFilesDir, "backup-restore/pending/payload/database/rikka_hub")
         assertTrue(staged.isFile)
@@ -83,14 +83,14 @@ class BackupManagerTest {
     }
 
     @Test fun newArchiveContainsStandaloneDatabaseAndNoWalOrShm() = runBlocking {
-        val archive = manager.createBackup(includeDatabase = true, includeFiles = false)
+        val archive = manager.createBackup(includeDatabase = true, includeFiles = false, includeMedia = false, includeSubAgents = false)
         ZipFile(archive).use { zip ->
             assertTrue(zip.getEntry("settings.json") != null)
             assertTrue(zip.getEntry(DatabaseBackup.ARCHIVE_DATABASE) != null)
             assertEquals(null, zip.getEntry(DatabaseBackup.WAL))
             assertEquals(null, zip.getEntry(DatabaseBackup.SHM))
         }
-        manager.stageRestore(archive, includeDatabase = true, includeFiles = false)
+        manager.stageRestore(archive, includeDatabase = true, includeFiles = false, includeMedia = false, includeSubAgents = false)
         assertEquals("live", probe(liveDatabase))
     }
 
@@ -103,7 +103,7 @@ class BackupManagerTest {
         ZipOutputStream(archive.outputStream()).use { addFile(it, DatabaseBackup.ARCHIVE_DATABASE, future) }
         var failed = false
         try {
-            manager.stageRestore(archive, includeDatabase = true, includeFiles = false)
+            manager.stageRestore(archive, includeDatabase = true, includeFiles = false, includeMedia = false, includeSubAgents = false)
         } catch (_: Exception) {
             failed = true
         }

@@ -19,6 +19,9 @@ object SubAgentTurnStatus {
     const val RUNNING = "running"
     const val OK = "ok"
     const val ERROR = "error"
+
+    /** 被用户单独终止 */
+    const val CANCELLED = "cancelled"
 }
 
 /** 小组讨论消息的类型 */
@@ -91,7 +94,43 @@ data class SubAgentTraceTurn(
     val steps: List<SubAgentTraceStep> = emptyList(),
     val output: String = "",
     val error: String? = null,
+    /** 本次发言消耗的 token（运行中为实时累计值，结束后为总量） */
+    val promptTokens: Int = 0,
+    val completionTokens: Int = 0,
+    val cachedTokens: Int = 0,
+    val totalTokens: Int = 0,
+    /** 本次发言耗时（毫秒）；运行中为已耗时，结束后为总耗时 */
+    val elapsedMs: Long = 0,
 )
+
+/** 一组子智能体发言的 token 与耗时合计 */
+@Serializable
+data class SubAgentUsage(
+    val promptTokens: Int = 0,
+    val completionTokens: Int = 0,
+    val cachedTokens: Int = 0,
+    val totalTokens: Int = 0,
+    val elapsedMs: Long = 0,
+) {
+    val isEmpty: Boolean get() = totalTokens == 0 && elapsedMs == 0L
+}
+
+/** 汇总一组发言的 token 与耗时 */
+fun Iterable<SubAgentTraceTurn>.usageSummary(): SubAgentUsage {
+    var prompt = 0
+    var completion = 0
+    var cached = 0
+    var total = 0
+    var elapsed = 0L
+    for (turn in this) {
+        prompt += turn.promptTokens
+        completion += turn.completionTokens
+        cached += turn.cachedTokens
+        total += turn.totalTokens
+        elapsed += turn.elapsedMs
+    }
+    return SubAgentUsage(prompt, completion, cached, total, elapsed)
+}
 
 /** 子智能体过程中的一个步骤 */
 @Serializable

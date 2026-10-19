@@ -15,6 +15,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -30,11 +31,13 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.AiBrain01
 import me.rerere.hugeicons.stroke.ArrowDown01
 import me.rerere.hugeicons.stroke.ArrowUp01
+import me.rerere.hugeicons.stroke.StopCircle
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.ai.SubAgentLiveStore
 import me.rerere.rikkahub.data.ai.tools.DISCUSS_SUB_AGENTS_TOOL
@@ -45,10 +48,16 @@ import me.rerere.rikkahub.data.model.GroupMessageKind
 import me.rerere.rikkahub.data.model.SubAgentStepType
 import me.rerere.rikkahub.data.model.SubAgentTraceStep
 import me.rerere.rikkahub.data.model.SubAgentTraceTurn
+import me.rerere.rikkahub.data.model.SubAgentTurnStatus
+import me.rerere.rikkahub.data.model.SubAgentUsage
 import me.rerere.rikkahub.data.model.toSubAgentTrace
+import me.rerere.rikkahub.data.model.usageSummary
 import me.rerere.rikkahub.ui.components.ui.Tag
 import me.rerere.rikkahub.ui.components.ui.TagType
+import me.rerere.rikkahub.ui.context.LocalConversationMessages
+import me.rerere.rikkahub.utils.formatNumber
 import org.koin.compose.koinInject
+import java.util.Locale
 
 /** 子智能体任务分派的步骤渲染器：展开后展示每个子智能体的推理、工具调用与输出。 */
 object SubAgentDispatchToolUI : ToolUIRenderer {
@@ -118,6 +127,16 @@ private fun SubAgentTraceContent(context: ToolUIContext, scrollable: Boolean = f
     val liveTraces by liveStore.traces.collectAsState()
     val trace = persisted ?: liveTraces[context.tool.toolCallId]
 
+    // 正在运行（尚未执行完）时，才允许单独终止某个子智能体
+    val canCancel = !context.tool.isExecuted
+    val liveKey = context.tool.toolCallId
+
+    // 本对话全部子智能体过程记录的累计消耗
+    val conversationMessages = LocalConversationMessages.current
+    val conversationUsage = remember(conversationMessages) {
+        conversationMessages.subAgentUsageTotals()
+    }
+
     val modifier = if (scrollable) {
         Modifier
             .fillMaxHeight(0.8f)
@@ -147,8 +166,38 @@ private fun SubAgentTraceContent(context: ToolUIContext, scrollable: Boolean = f
                     )
                 }
 
-                trace.turns.forEach { turn ->
-                    SubAgentTurnCard(turn)
+                if (!conversationUsage.isEmpty) {
+                    Text(
+                        text = stringResource(
+                            R.string.chat_message_sub_agent_usage_conversation,
+                            usageText(conversationUsage),
+                        ),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+
+                trace.turns.forEachIndexed { index, turn ->
+                    SubAgentTurnCard(
+                        turn = turn,
+                        onCancel = if (canCancel && turn.status == SubAgentTurnStatus.RUNNING) {
+                            { liveStore.cancelTask(liveKey, index) }
+                        } else {
+                            null
+                        },
+                    )
+                }
+
+                val traceUsage = trace.turns.usageSummary()
+                if (!traceUsage.isEmpty) {
+                    Text(
+                        text = stringResource(
+                            R.string.chat_message_sub_agent_usage_trace,
+                            usageText(traceUsage),
+                        ),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
 
                 if (trace.groupMessages.isNotEmpty()) {
@@ -171,7 +220,7 @@ private fun SubAgentTraceContent(context: ToolUIContext, scrollable: Boolean = f
 }
 
 @Composable
-private fun SubAgentTurnCard(turn: SubAgentTraceTurn) {
+private fun SubAgentTurnCard(turn: SubAgentTraceTurn, onCancel: (() -> Unit)? = null) {
     // 默认折叠：无论本次分派了多少个子智能体，都只露出一行标题，点击卡片标题才展开详情。
     // 用 agent + round 作 key，避免流式刷新内容时把展开状态重置掉。
     var expanded by remember(turn.agent, turn.round) { mutableStateOf(false) }
@@ -216,6 +265,11 @@ private fun SubAgentTurnCard(turn: SubAgentTraceTurn) {
                         Text(stringResource(R.string.chat_message_sub_agent_read_only))
                     }
                 }
+                if (turn.status == SubAgentTurnStatus.CANCELLED) {
+                    Tag(type = TagType.WARNING) {
+                        Text(stringResource(R.string.chat_message_sub_agent_cancelled))
+                    }
+                }
                 Spacer(Modifier.weight(1f))
                 if (turn.model.isNotBlank()) {
                     Text(
@@ -226,11 +280,39 @@ private fun SubAgentTurnCard(turn: SubAgentTraceTurn) {
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
+                if (onCancel != null) {
+                    IconButton(
+                        onClick = onCancel,
+                        modifier = Modifier.size(28.dp),
+                    ) {
+                        Icon(
+                            imageVector = HugeIcons.StopCircle,
+                            contentDescription = stringResource(R.string.chat_message_sub_agent_stop),
+                            tint = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
+                }
                 Icon(
                     imageVector = if (expanded) HugeIcons.ArrowUp01 else HugeIcons.ArrowDown01,
                     contentDescription = null,
                     modifier = Modifier.size(16.dp),
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+
+            val usage = SubAgentUsage(
+                promptTokens = turn.promptTokens,
+                completionTokens = turn.completionTokens,
+                cachedTokens = turn.cachedTokens,
+                totalTokens = turn.totalTokens,
+                elapsedMs = turn.elapsedMs,
+            )
+            if (!usage.isEmpty) {
+                Text(
+                    text = usageText(usage),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
 
@@ -421,6 +503,38 @@ private fun SubAgentStepView(step: SubAgentTraceStep) {
             style = MaterialTheme.typography.bodySmall,
         )
     }
+}
+
+/** 汇总本对话中全部子智能体过程记录的 token 与耗时。 */
+private fun List<UIMessage>.subAgentUsageTotals(): SubAgentUsage =
+    flatMap { message ->
+        message.parts.filterIsInstance<UIMessagePart.Tool>().mapNotNull { tool ->
+            tool.output.filterIsInstance<UIMessagePart.Text>().firstOrNull()
+                ?.metadata?.toSubAgentTrace()
+        }
+    }.flatMap { it.turns }.usageSummary()
+
+/** 把 token 与耗时拼成一行简短说明。 */
+private fun usageText(usage: SubAgentUsage): String {
+    val tokens = if (usage.totalTokens > 0) {
+        val cached = if (usage.cachedTokens > 0) {
+            " (${usage.cachedTokens.formatNumber()} cached)"
+        } else {
+            ""
+        }
+        "↑${usage.promptTokens.formatNumber()} ↓${usage.completionTokens.formatNumber()}" +
+            "$cached · ${usage.totalTokens.formatNumber()} tokens"
+    } else {
+        ""
+    }
+    val duration = if (usage.elapsedMs > 0) formatDuration(usage.elapsedMs) else ""
+    return listOf(tokens, duration).filter { it.isNotBlank() }.joinToString(" · ")
+}
+
+private fun formatDuration(ms: Long): String = when {
+    ms >= 60_000 -> "${ms / 60_000}m${(ms % 60_000) / 1_000}s"
+    ms >= 1_000 -> String.format(Locale.US, "%.1fs", ms / 1_000.0)
+    else -> "${ms}ms"
 }
 
 @Composable

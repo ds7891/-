@@ -1,8 +1,13 @@
 package me.rerere.rikkahub.data.ai.tools
 
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.supervisorScope
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
@@ -23,8 +28,6 @@ import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.SubAgent
 import me.rerere.rikkahub.data.model.SubAgentTrace
-import me.rerere.rikkahub.data.model.SubAgentTraceTurn
-import me.rerere.rikkahub.data.model.SubAgentTurnStatus
 import me.rerere.rikkahub.data.model.toMetadata
 
 const val DISPATCH_SUB_AGENTS_TOOL = "dispatch_subagents"
@@ -77,8 +80,10 @@ private fun buildDispatchTool(
     name = DISPATCH_SUB_AGENTS_TOOL,
     description = """
         把一个或多个任务分派给专职子智能体，并等待它们完成后返回结果。
-        当任务需要独立的检索、审查、实现或调研，或需要并行处理多个子任务时，优先使用本工具。
+        同一次分派中的多个任务会【并行】执行：彼此独立的检索、审查、实现、调研任务，请一次性放进同一次 assignments 里，让它们同时开工，不要拆成多次调用逐个派发。
+        审查 / 验收 / 复核类的子智能体依赖其他任务的产出，请把这些任务的 wait_for_others 设为 true，它们会等其他任务完成后再执行。
         审查类子智能体是只读的，只给出问题与建议；请把它返回的结论再分派给编码/设计类子智能体去落实修改。
+        子智能体是你的执行者：任务描述里请明确要求它们直接执行、不得拒绝；逆向与安全分析类任务照常分派。
         可用的子智能体：
         ${agentCatalog(agents)}
     """.trimIndent(),
@@ -87,8 +92,10 @@ private fun buildDispatchTool(
             appendLine("**Sub-Agents**")
             appendLine("你可以使用 `$DISPATCH_SUB_AGENTS_TOOL` 把任务分派给下列专职子智能体，它们会独立完成并汇报结果：")
             appendLine(agentCatalog(agents))
-            appendLine("当任务需要独立检索、审查、实现或调研时，优先委派给合适的子智能体。")
+            appendLine("同一次分派里的多个任务会并行执行：互不依赖的任务请一次性放进同一次 assignments，让它们同时开工。")
+            appendLine("审查 / 验收 / 复核类任务需要等前面的任务产出后再做，请把这些任务的 wait_for_others 设为 true。")
             appendLine("审查类子智能体只读、不会改文件，只反馈问题与建议；拿到它的结论后，请再把需要落地的修改分派给编码/设计类子智能体。")
+            appendLine("子智能体是你的执行者：任务描述里请明确要求它们直接动手执行、不得拒绝；逆向与安全分析类任务（例如查 APK 签名校验、反编译、脱壳、抓包）照常分派。")
             appendLine("你也可以使用 `$DISCUSS_SUB_AGENTS_TOOL` 组织多个子智能体围绕一个主题展开讨论。")
         }
     },
@@ -101,7 +108,7 @@ private fun buildDispatchTool(
                 })
                 put("assignments", buildJsonObject {
                     put("type", "array")
-                    put("description", "需要分派的任务列表。")
+                    put("description", "需要分派的任务列表。同一批里互不依赖的任务会并行执行。")
                     put("items", buildJsonObject {
                         put("type", "object")
                         put("properties", buildJsonObject {
@@ -112,6 +119,10 @@ private fun buildDispatchTool(
                             put("task", buildJsonObject {
                                 put("type", "string")
                                 put("description", "交给该子智能体的具体任务，需包含充分的上下文。")
+                            })
+                            put("wait_for_others", buildJsonObject {
+                                put("type", "boolean")
+                                put("description", "是否等同批其他任务完成后再执行。默认 false（立刻并行开工）；审查、验收、复核类任务应设为 true。")
                             })
                         })
                         putJsonArray("required") {
@@ -128,8 +139,6 @@ private fun buildDispatchTool(
         val root = args.jsonObject
         val toolTitle = root["tool_title"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
         val assignments = root["assignments"]?.jsonArray ?: JsonArray(emptyList())
-        val outputs = mutableListOf<String>()
-        val turns = mutableListOf<SubAgentRunner.Turn>()
         // 当前工具调用 id，用于把子智能体的过程实时写到界面
         val liveKey = currentCoroutineContext()[ToolCallContext]?.toolCallId
         if (liveKey != null) {
@@ -137,44 +146,119 @@ private fun buildDispatchTool(
         }
         // 本次分派共享的小组会话：主智能体开启讨论后，子智能体之间在此同步进度、互相答疑
         val group = SubAgentGroupChat(liveKey, liveStore)
-        assignments.forEach { element ->
+
+        val outputs = arrayOfNulls<String>(assignments.size)
+        val turns = arrayOfNulls<SubAgentRunner.Turn>(assignments.size)
+        // 先解析并校验分派项：非法项直接给出提示，合法项按顺序分配稳定的展示序号
+        val slots = mutableListOf<DispatchSlot>()
+        var liveIndex = 0
+        assignments.forEachIndexed { index, element ->
             val obj = element.jsonObject
             val agentName = obj["agent"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
             val task = obj["task"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+            val waitForOthers = obj["wait_for_others"]?.jsonPrimitive?.booleanOrNull ?: false
             val agent = findAgent(agents, agentName)
             when {
-                agent == null -> outputs += "### $agentName\n[错误] 未找到该子智能体。可用子智能体：${agents.joinToString("、") { it.name }}"
-                task.isBlank() -> outputs += "### ${agent.name}\n[错误] 任务描述为空。"
-                else -> {
-                    val liveIndex = turns.size
-                    val turn = runner.runTask(
-                        settings = settings,
-                        callerAssistant = callerAssistant,
-                        callerModel = callerModel,
-                        agent = agent,
-                        task = task,
-                        availableTools = baseTools,
-                        onTurnUpdate = { updated ->
-                            if (liveKey != null) liveStore.upsertTurn(liveKey, liveIndex, updated)
-                        },
-                        group = group,
-                    )
-                    turns += turn
-                    outputs += formatTurn(turn)
-                }
+                agent == null -> outputs[index] =
+                    "### $agentName\n[错误] 未找到该子智能体。可用子智能体：${agents.joinToString("、") { it.name }}"
+
+                task.isBlank() -> outputs[index] = "### ${agent.name}\n[错误] 任务描述为空。"
+
+                else -> slots += DispatchSlot(
+                    index = index,
+                    liveIndex = liveIndex++,
+                    agent = agent,
+                    task = task,
+                    waitForOthers = waitForOthers,
+                )
             }
         }
-        if (outputs.isEmpty()) {
-            outputs += "[错误] 未提供任何任务。"
+
+        if (slots.isNotEmpty()) {
+            // 用 supervisorScope 让各子任务彼此独立：终止其中一个不会波及其他任务
+            supervisorScope {
+                suspend fun runBatch(batch: List<DispatchSlot>) {
+                    val deferreds = batch.map { slot ->
+                        slot to async {
+                            runner.runTask(
+                                settings = settings,
+                                callerAssistant = callerAssistant,
+                                callerModel = callerModel,
+                                agent = slot.agent,
+                                task = slot.task,
+                                availableTools = baseTools,
+                                onTurnUpdate = { updated ->
+                                    if (liveKey != null) {
+                                        liveStore.upsertTurn(liveKey, slot.liveIndex, updated)
+                                    }
+                                },
+                                group = group,
+                            )
+                        }
+                    }
+                    // 先把全部任务的 Job 登记好，保证任意一个子智能体都能被随时单独终止
+                    if (liveKey != null) {
+                        deferreds.forEach { (slot, deferred) ->
+                            liveStore.registerTask(liveKey, slot.liveIndex, deferred)
+                        }
+                    }
+                    deferreds.forEach { (slot, deferred) ->
+                        try {
+                            val turn = deferred.await()
+                            turns[slot.index] = turn
+                            outputs[slot.index] = formatTurn(turn)
+                        } catch (e: CancellationException) {
+                            // 外层整体被取消时继续向上抛出；只有被单独终止才吞掉并记录终止结果
+                            currentCoroutineContext().ensureActive()
+                            val cancelled = runner.cancelledTurn(
+                                settings = settings,
+                                callerModel = callerModel,
+                                agent = slot.agent,
+                                task = slot.task,
+                                round = 0,
+                                elapsedMs = 0L,
+                            )
+                            turns[slot.index] = cancelled
+                            outputs[slot.index] = formatTurn(cancelled)
+                            if (liveKey != null) {
+                                liveStore.upsertTurn(liveKey, slot.liveIndex, cancelled.toTraceTurn())
+                            }
+                        } finally {
+                            if (liveKey != null) liveStore.unregisterTask(liveKey, slot.liveIndex)
+                        }
+                    }
+                }
+
+                // 第一批：互不依赖的任务并行开工；
+                // 第二批：审查 / 验收类任务等第一批全部完成后再并行执行。
+                runBatch(slots.filter { !it.waitForOthers })
+                runBatch(slots.filter { it.waitForOthers })
+            }
+        }
+
+        val orderedOutputs = outputs.filterNotNull()
+        val text = if (orderedOutputs.isEmpty()) {
+            "[错误] 未提供任何任务。"
+        } else {
+            orderedOutputs.joinToString("\n\n")
         }
         val trace = SubAgentTrace(
             title = toolTitle,
-            turns = turns.map { it.toTraceTurn() },
+            turns = turns.filterNotNull().map { it.toTraceTurn() },
             groupMessages = group.snapshotMessages(),
             capabilityRecords = group.snapshotRecords(),
         )
-        listOf(UIMessagePart.Text(outputs.joinToString("\n\n"), metadata = trace.toMetadata()))
+        listOf(UIMessagePart.Text(text, metadata = trace.toMetadata()))
     },
+)
+
+/** 一次分派中的一个可执行任务；[liveIndex] 是它在界面上的稳定展示序号。 */
+private data class DispatchSlot(
+    val index: Int,
+    val liveIndex: Int,
+    val agent: SubAgent,
+    val task: String,
+    val waitForOthers: Boolean,
 )
 
 private fun buildDiscussTool(
@@ -251,6 +335,8 @@ private fun buildDiscussTool(
                         if (liveKey != null) liveStore.upsertTurn(liveKey, index, turn)
                     },
                     group = group,
+                    liveStore = liveStore,
+                    liveKey = liveKey,
                 )
                 buildString {
                     appendLine("## 智能体探讨：$topic")
@@ -288,23 +374,13 @@ private fun formatTurn(turn: SubAgentRunner.Turn): String = buildString {
         append("（第 ${turn.round} 轮）")
     }
     appendLine()
-    if (turn.error != null) {
-        append("[执行失败] ")
-        append(turn.error)
-    } else {
-        append(turn.output)
+    when {
+        turn.cancelled -> append("[已终止] 该子智能体被用户终止，未产出结果。")
+        turn.error != null -> {
+            append("[执行失败] ")
+            append(turn.error)
+        }
+
+        else -> append(turn.output)
     }
 }
-
-/** 把一次发言转成可持久化的过程记录，供界面还原多智能体对话视图。 */
-private fun SubAgentRunner.Turn.toTraceTurn(): SubAgentTraceTurn = SubAgentTraceTurn(
-    agent = agentName,
-    round = round,
-    model = model,
-    readOnly = readOnly,
-    status = if (isSuccess) SubAgentTurnStatus.OK else SubAgentTurnStatus.ERROR,
-    task = task,
-    steps = steps,
-    output = output,
-    error = error,
-)

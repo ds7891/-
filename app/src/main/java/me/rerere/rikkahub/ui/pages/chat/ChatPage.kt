@@ -55,6 +55,7 @@ import kotlinx.coroutines.launch
 import me.rerere.ai.provider.BuiltInTools
 import me.rerere.ai.provider.Model
 import me.rerere.ai.provider.ProviderSetting
+import me.rerere.ai.registry.ModelRegistry
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.Cancel01
@@ -75,6 +76,7 @@ import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.repository.WorkspaceRepository
 import me.rerere.rikkahub.service.ChatError
 import me.rerere.rikkahub.ui.components.ai.ChatAttachmentPickerActions
+import me.rerere.rikkahub.ui.components.ai.ChatContextInput
 import me.rerere.rikkahub.ui.components.ai.ChatInput
 import me.rerere.rikkahub.ui.components.ai.FilesPicker
 import me.rerere.rikkahub.ui.components.ai.SearchMode
@@ -355,6 +357,26 @@ private fun ChatPageContent(
                         vm.stopGeneration()
                     },
                     enableSearch = enableWebSearch,
+                    contextInput = ChatContextInput(
+                        messages = conversation.currentMessages,
+                        systemPrompt = assistant.systemPrompt,
+                        customSystemPrompt = conversation.customSystemPrompt,
+                        modelName = currentChatModel?.displayName?.ifBlank { currentChatModel.modelId }.orEmpty(),
+                        draftText = inputState.textContent.text.toString(),
+                        contextMessageLimit = assistant.contextMessageLimit,
+                        // 会话自定义值优先；未自定义时取模型源数据里的上下文长度，取不到再回落到默认 128K
+                        referenceWindow = conversation.contextReferenceWindow
+                            ?: currentChatModel?.let {
+                                ModelRegistry.MODEL_CONTEXT_LENGTH.getData(it.modelId)
+                            },
+                        upstreamTokens = conversation.currentMessages
+                            .lastOrNull { (it.usage?.promptTokens ?: 0) > 0 }
+                            ?.usage?.promptTokens,
+                    ),
+                    onContextReferenceWindowChange = { window ->
+                        vm.updateConversation(conversation.copy(contextReferenceWindow = window))
+                        vm.saveConversationAsync()
+                    },
                     onUpdateSearchMode = { mode ->
                         val current = setting.getCurrentAssistant()
                         val model = setting.getCurrentChatModel()
@@ -463,6 +485,9 @@ private fun ChatPageContent(
                 onRegenerate = {
                     vm.regenerateAtMessage(it)
                 },
+                onContinue = {
+                    vm.continueGeneration()
+                },
                 onEdit = {
                     inputState.editingMessage = it.id
                     inputState.setContents(it.parts)
@@ -472,6 +497,9 @@ private fun ChatPageContent(
                         val fork = vm.forkMessage(message = it)
                         navigateToChatPage(navController, chatId = fork.id)
                     }
+                },
+                onQuoteMessage = {
+                    inputState.quoteMessage(it)
                 },
                 onDelete = {
                     if (loadingJob != null) {

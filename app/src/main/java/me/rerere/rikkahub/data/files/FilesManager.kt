@@ -252,7 +252,15 @@ class FilesManager(
     }
 
     fun getImagesDir(): File {
-        val dir = context.filesDir.resolve("images")
+        val dir = context.filesDir.resolve(FileFolders.IMAGES)
+        if (!dir.exists()) {
+            dir.mkdirs()
+        }
+        return dir
+    }
+
+    fun getVideosDir(): File {
+        val dir = context.filesDir.resolve(FileFolders.VIDEOS)
         if (!dir.exists()) {
             dir.mkdirs()
         }
@@ -516,6 +524,8 @@ object FileFolders {
     const val BUILTIN_SKILLS = "builtin_skills"
     const val FONTS = "fonts"
     const val TOOL_OUTPUTS = "tool_outputs"
+    const val IMAGES = "images"
+    const val VIDEOS = "videos"
 }
 
 suspend fun FilesManager.saveUploadFromUri(

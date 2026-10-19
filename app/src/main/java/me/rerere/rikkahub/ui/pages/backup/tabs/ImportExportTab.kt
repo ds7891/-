@@ -217,6 +217,8 @@ fun ImportExportTab(
                                         when (item) {
                                             WebDavConfig.BackupItem.DATABASE -> stringResource(R.string.backup_page_chat_records)
                                             WebDavConfig.BackupItem.FILES -> stringResource(R.string.backup_page_files)
+                                            WebDavConfig.BackupItem.MEDIA -> stringResource(R.string.backup_page_media)
+                                            WebDavConfig.BackupItem.SUB_AGENTS -> stringResource(R.string.backup_page_sub_agents)
                                         }
                                     )
                                 }

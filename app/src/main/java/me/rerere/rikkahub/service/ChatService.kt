@@ -37,6 +37,7 @@ import me.rerere.ai.ui.UIMessagePart
 import me.rerere.ai.ui.canResumeToolExecution
 import me.rerere.ai.ui.finishPendingTools
 import me.rerere.ai.ui.isEmptyInputMessage
+import me.rerere.ai.ui.isEmptyUIMessage
 import me.rerere.common.android.Logging
 import me.rerere.rikkahub.AppScope
 import me.rerere.rikkahub.R
@@ -85,6 +86,14 @@ import java.util.Locale
 import kotlin.uuid.Uuid
 
 private const val TAG = "ChatService"
+
+/**
+ * 停止生成时写入被中断工具 output 的标记。
+ *
+ * 该标记在消息里持久化，UI 据此判断上一条回复是被中断的、可以「继续」补全。
+ */
+internal const val INTERRUPTED_TOOL_RESULT_MARKER =
+    "Generation cancelled by user before tool execution completed."
 
 internal fun backgroundTextGenerationParams(
     model: Model,
@@ -511,6 +520,58 @@ class ChatService(
         session.setJob(job)
     }
 
+    // ---- 继续生成消息 ----
+
+    /**
+     * 继续生成：不新增助手消息，直接把最后一条被中断的助手消息作为前缀重新请求，
+     * 让模型接着已输出的文本 / 思考 / 工具调用继续补全。
+     *
+     * 与重新生成的区别在于保留已产出的半截内容：请求里末尾仍是那条助手消息，
+     * [me.rerere.rikkahub.data.ai.GenerationLoop] 会把新的流式结果合并进同一条消息。
+     */
+    fun continueGeneration(conversationId: Uuid) = synchronized(sessionManager.getOrCreate(conversationId)) {
+        val session = sessionManager.getOrCreate(conversationId)
+        val previousJob = session.getJob()
+
+        val job = launchGenerationJob(
+            conversationId = conversationId,
+            keepAliveInBackground = true,
+        ) {
+            try {
+                previousJob?.join()
+                // 异常中断时不会有 stopGeneration 兜底，先把半截的工具调用标记为取消，
+                // 避免续写时拿不完整的入参去执行工具。
+                finishInterruptedPendingTools(conversationId)
+                val conversation = session.state.value
+                val lastNode = conversation.messageNodes.lastOrNull()
+                val lastMessage = lastNode?.currentMessage
+                // 毫无内容的助手消息无法作为续写前缀，丢弃它退化为重新生成。
+                if (lastMessage != null &&
+                    lastMessage.role == MessageRole.ASSISTANT &&
+                    lastMessage.parts.isEmptyUIMessage()
+                ) {
+                    saveConversation(
+                        conversationId,
+                        conversation.copy(messageNodes = conversation.messageNodes.dropLast(1)),
+                    )
+                }
+                session.messageQueue.resume()
+                handleMessageComplete(conversationId)
+                _generationDoneFlow.emit(conversationId)
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                session.messageQueue.pause()
+                addError(
+                    e,
+                    conversationId,
+                    title = context.getString(R.string.error_title_regenerate_message),
+                )
+            }
+        }
+
+        session.setJob(job)
+    }
+
     // ---- 处理工具调用审批 ----
 
     fun handleToolApproval(
@@ -683,6 +744,9 @@ class ChatService(
                 },
                 outputTransformers = outputTransformers,
                 tools = tools,
+                onQingshuiDegrade = { degraded ->
+                    settingsStore.update { it.copy(qingshuiFeatures = degraded) }
+                },
             ).onCompletion {
                 // 可能被取消了，或者意外结束，兜底更新
                 val updatedConversation = session.finishGeneration { conversation ->
@@ -791,7 +855,7 @@ class ChatService(
         return tool.copy(
             output = listOf(
                 UIMessagePart.Text(
-                    """{"status":"cancelled","error":"Generation cancelled by user before tool execution completed."}"""
+                    """{"status":"cancelled","error":"$INTERRUPTED_TOOL_RESULT_MARKER"}"""
                 )
             )
         )

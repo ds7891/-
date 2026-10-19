@@ -7,7 +7,9 @@ import me.rerere.rikkahub.data.db.entity.GenMediaEntity
 class GenMediaRepository(private val dao: GenMediaDAO) {
     fun getAllMedia(): PagingSource<Int, GenMediaEntity> = dao.getAll()
 
-    suspend fun insertMedia(media: GenMediaEntity) = dao.insert(media)
+    fun getMediaByTypes(types: List<String>): PagingSource<Int, GenMediaEntity> = dao.getByTypes(types)
+
+    suspend fun insertMedia(media: GenMediaEntity): Long = dao.insert(media)
 
     suspend fun deleteMedia(id: Int) = dao.delete(id)
 }

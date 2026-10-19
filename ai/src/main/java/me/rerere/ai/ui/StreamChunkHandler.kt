@@ -82,16 +82,39 @@ class StreamChunkHandler(private val model: Model? = null) {
         when (chunk) {
             is StreamChunk.TextStart -> {
                 if (chunk.id in textPartIndexes) this
-                else copy(parts = parts + UIMessagePart.Text("", chunk.metadata)).also {
-                    textPartIndexes[chunk.id] = parts.size
+                else {
+                    // 续写场景（消息末尾已有一段未结束的文本）直接沿用该 part，
+                    // 避免把同一次输出拆成两个相邻的文本块。
+                    val trailingIndex = trailingTextPartIndex()
+                    if (trailingIndex != null) {
+                        textPartIndexes[chunk.id] = trailingIndex
+                        this
+                    } else {
+                        copy(parts = parts + UIMessagePart.Text("", chunk.metadata)).also {
+                            textPartIndexes[chunk.id] = parts.size
+                        }
+                    }
                 }
             }
             is StreamChunk.TextDelta -> {
                 val index = textPartIndexes[chunk.id]
                 // 容忍 Provider 未发送 Start：首次收到 Delta 时直接创建对应 part。
                 if (index == null || parts.getOrNull(index) !is UIMessagePart.Text) {
-                    copy(parts = parts + UIMessagePart.Text(chunk.text, chunk.metadata)).also {
-                        textPartIndexes[chunk.id] = parts.size
+                    val trailingIndex = if (index == null) trailingTextPartIndex() else null
+                    if (trailingIndex != null) {
+                        copy(parts = parts.toMutableList().apply {
+                            val text = get(trailingIndex) as UIMessagePart.Text
+                            set(
+                                trailingIndex, text.copy(
+                                    text = text.text + chunk.text,
+                                    metadata = chunk.metadata ?: text.metadata,
+                                )
+                            )
+                        }).also { textPartIndexes[chunk.id] = trailingIndex }
+                    } else {
+                        copy(parts = parts + UIMessagePart.Text(chunk.text, chunk.metadata)).also {
+                            textPartIndexes[chunk.id] = parts.size
+                        }
                     }
                 } else {
                     copy(parts = parts.toMutableList().apply {
@@ -109,25 +132,50 @@ class StreamChunkHandler(private val model: Model? = null) {
             is StreamChunk.TextEnd -> this.also { textPartIndexes.remove(chunk.id) }
             is StreamChunk.ReasoningStart -> {
                 if (chunk.id in reasoningPartIndexes) this
-                else copy(parts = parts + UIMessagePart.Reasoning(
-                    reasoning = "",
-                    createdAt = Clock.System.now(),
-                    finishedAt = null,
-                    metadata = chunk.metadata,
-                    reasoningType = chunk.reasoningType,
-                )).also { reasoningPartIndexes[chunk.id] = parts.size }
+                else {
+                    // 与文本同理：续写时沿用末尾那段未收尾的推理，而不是另起一张思考卡片。
+                    val trailingIndex = trailingReasoningPartIndex()
+                    if (trailingIndex != null) {
+                        reasoningPartIndexes[chunk.id] = trailingIndex
+                        copy(parts = parts.toMutableList().apply {
+                            val reasoning = get(trailingIndex) as UIMessagePart.Reasoning
+                            set(trailingIndex, reasoning.copy(finishedAt = null))
+                        })
+                    } else {
+                        copy(parts = parts + UIMessagePart.Reasoning(
+                            reasoning = "",
+                            createdAt = Clock.System.now(),
+                            finishedAt = null,
+                            metadata = chunk.metadata,
+                            reasoningType = chunk.reasoningType,
+                        )).also { reasoningPartIndexes[chunk.id] = parts.size }
+                    }
+                }
             }
 
             is StreamChunk.ReasoningDelta -> {
                 val index = reasoningPartIndexes[chunk.id]
                 if (index == null || parts.getOrNull(index) !is UIMessagePart.Reasoning) {
-                    copy(parts = parts + UIMessagePart.Reasoning(
-                        reasoning = chunk.text,
-                        createdAt = Clock.System.now(),
-                        finishedAt = null,
-                        metadata = chunk.metadata,
-                        reasoningType = chunk.reasoningType,
-                    )).also { reasoningPartIndexes[chunk.id] = parts.size }
+                    val trailingIndex = if (index == null) trailingReasoningPartIndex() else null
+                    if (trailingIndex != null) {
+                        copy(parts = parts.toMutableList().apply {
+                            val reasoning = get(trailingIndex) as UIMessagePart.Reasoning
+                            set(trailingIndex, reasoning.copy(
+                                reasoning = reasoning.reasoning + chunk.text,
+                                metadata = chunk.metadata ?: reasoning.metadata,
+                                reasoningType = chunk.reasoningType,
+                                finishedAt = null,
+                            ))
+                        }).also { reasoningPartIndexes[chunk.id] = trailingIndex }
+                    } else {
+                        copy(parts = parts + UIMessagePart.Reasoning(
+                            reasoning = chunk.text,
+                            createdAt = Clock.System.now(),
+                            finishedAt = null,
+                            metadata = chunk.metadata,
+                            reasoningType = chunk.reasoningType,
+                        )).also { reasoningPartIndexes[chunk.id] = parts.size }
+                    }
                 } else {
                     copy(parts = parts.toMutableList().apply {
                         val reasoning = get(index) as UIMessagePart.Reasoning
@@ -291,7 +339,8 @@ class StreamChunkHandler(private val model: Model? = null) {
             is StreamChunk.Annotations -> copy(annotations = (annotations + chunk.annotations).distinct())
             is StreamChunk.Usage -> copy(usage = usage.merge(chunk.usage))
             is StreamChunk.Finish -> copy(
-                finishedAt = Clock.System.now().toLocalDateTime(TimeZone.currentSystemDefault())
+                finishedAt = Clock.System.now().toLocalDateTime(TimeZone.currentSystemDefault()),
+                finishReason = chunk.finishReason,
             ).finishReasoning().also {
                 // Finish 同时结束尚未显式结束的 reasoning，并释放本次响应流的索引状态。
                 textPartIndexes.clear()
@@ -308,6 +357,23 @@ class StreamChunkHandler(private val model: Model? = null) {
     ): UIMessage = copy(parts = parts.map { part ->
         if (part is UIMessagePart.ServerTool && part.toolCallId == id) transform(part) else part
     })
+
+    /**
+     * 消息末尾若是一段未经 [StreamChunk.TextEnd] 收尾的文本，返回它的下标。
+     *
+     * 用于「继续生成」：新一段文本会接着这段半截文本写，而不是另起一个文本块。
+     * 正常生成时末尾助手消息为空，或最后一个 part 不是文本，此处返回 null，行为与原来一致。
+     */
+    private fun UIMessage.trailingTextPartIndex(): Int? {
+        val index = parts.lastIndex
+        return index.takeIf { it >= 0 && parts[it] is UIMessagePart.Text }
+    }
+
+    /** 同 [trailingTextPartIndex]，用于续写被中断的推理段。 */
+    private fun UIMessage.trailingReasoningPartIndex(): Int? {
+        val index = parts.lastIndex
+        return index.takeIf { it >= 0 && parts[it] is UIMessagePart.Reasoning }
+    }
 }
 
 private fun parseServerToolJson(value: String) = runCatching {
@@ -329,6 +395,7 @@ fun List<UIMessage>.handleTextGenerationResult(
         modelId = model?.id,
         usage = result.usage,
         finishedAt = Clock.System.now().toLocalDateTime(TimeZone.currentSystemDefault()),
+        finishReason = result.finishReason,
     ).finishReasoning()
     return if (last().role != incoming.role) {
         this + incoming
@@ -337,6 +404,7 @@ fun List<UIMessage>.handleTextGenerationResult(
             modelId = model?.id ?: last().modelId,
             usage = last().usage.merge(result.usage ?: TokenUsage()),
             finishedAt = incoming.finishedAt,
+            finishReason = incoming.finishReason,
         ).finishReasoning()
     }
 }

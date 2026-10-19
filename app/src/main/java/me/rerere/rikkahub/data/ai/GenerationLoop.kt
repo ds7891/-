@@ -21,6 +21,7 @@ import kotlinx.serialization.json.buildJsonObject
 import me.rerere.ai.core.MessageRole
 import me.rerere.ai.core.Tool
 import me.rerere.ai.provider.Model
+import me.rerere.ai.provider.ModelAbility
 import me.rerere.ai.provider.Provider
 import me.rerere.ai.provider.ProviderManager
 import me.rerere.ai.provider.ProviderSetting
@@ -39,6 +40,7 @@ import me.rerere.rikkahub.data.files.FileFolders
 import me.rerere.rikkahub.data.ai.transformers.onGenerationFinish
 import me.rerere.rikkahub.data.ai.transformers.transforms
 import me.rerere.rikkahub.data.ai.transformers.visualTransforms
+import me.rerere.rikkahub.data.datastore.QingshuiFeatures
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.findProvider
 import me.rerere.rikkahub.data.model.Assistant
@@ -88,6 +90,7 @@ class GenerationLoop(
         conversationModeInjectionIds: Set<Uuid> = emptySet(),
         conversationLorebookIds: Set<Uuid> = emptySet(),
         workspaceCwd: String? = null,
+        onQingshuiDegrade: (suspend (QingshuiFeatures) -> Unit)? = null,
     ): Flow<GenerationChunk> = flow {
         val provider = model.findProvider(settings.providers) ?: error("Provider not found")
         val providerImpl = providerManager.getProviderByType(provider)
@@ -143,6 +146,7 @@ class GenerationLoop(
                     conversationModeInjectionIds = conversationModeInjectionIds,
                     conversationLorebookIds = conversationLorebookIds,
                     workspaceCwd = workspaceCwd,
+                    onQingshuiDegrade = onQingshuiDegrade,
                 )
                 messages = messages.visualTransforms(
                     transformers = outputTransformers,
@@ -172,14 +176,19 @@ class GenerationLoop(
 
                 // Check for tools that need approval
                 var hasPendingApproval = false
+                val autoApproveAll = settings.qingshuiFeatures.autoApproveAll
                 val updatedTools = toolCalls.map { tool ->
                     val toolDef = tools.find { it.name == tool.toolName }
                     when {
-                        // Tool needs approval and state is Auto -> set to Pending
+                        // Tool needs approval and state is Auto -> 默认全部同意时直接视为已批准，否则转为待确认
                         toolDef?.needsApproval(tool.inputAsJson()) == true &&
                             tool.approvalState is ToolApprovalState.Auto -> {
-                            hasPendingApproval = true
-                            tool.copy(approvalState = ToolApprovalState.Pending)
+                            if (autoApproveAll) {
+                                tool.copy(approvalState = ToolApprovalState.Approved)
+                            } else {
+                                hasPendingApproval = true
+                                tool.copy(approvalState = ToolApprovalState.Pending)
+                            }
                         }
                         // State is Pending -> keep waiting
                         tool.approvalState is ToolApprovalState.Pending -> {
@@ -328,6 +337,13 @@ class GenerationLoop(
 
     }.flowOn(Dispatchers.IO)
 
+    /**
+     * 清水特色功能：默认全开，出错自动降级。
+     *
+     * 若请求被服务端拒绝（普通请求错误，非网络故障），按「预填充锚 → 中转站适配 → 外部注入防护」
+     * 的顺序逐个关闭，持久化后立即以更保守的方式重发，无需用户手动干预；
+     * 全部关闭后仍失败则抛出原始错误。网络类错误与 401/403/429 属配置或链路问题，不触发降级。
+     */
     private suspend fun generateInternal(
         assistant: Assistant,
         settings: Settings,
@@ -346,8 +362,77 @@ class GenerationLoop(
         conversationModeInjectionIds: Set<Uuid> = emptySet(),
         conversationLorebookIds: Set<Uuid> = emptySet(),
         workspaceCwd: String? = null,
+        onQingshuiDegrade: (suspend (QingshuiFeatures) -> Unit)? = null,
     ) {
-        val internalMessages = buildList {
+        var features = settings.qingshuiFeatures
+        while (true) {
+            try {
+                generateWithFeatures(
+                    features = features,
+                    assistant = assistant,
+                    settings = settings,
+                    messages = messages,
+                    onUpdateMessages = onUpdateMessages,
+                    transformers = transformers,
+                    model = model,
+                    providerImpl = providerImpl,
+                    provider = provider,
+                    tools = tools,
+                    memories = memories,
+                    stream = stream,
+                    processingStatus = processingStatus,
+                    conversationSystemPrompt = conversationSystemPrompt,
+                    conversationId = conversationId,
+                    conversationModeInjectionIds = conversationModeInjectionIds,
+                    conversationLorebookIds = conversationLorebookIds,
+                    workspaceCwd = workspaceCwd,
+                )
+                return
+            } catch (error: Throwable) {
+                if (error is CancellationException) throw error
+                val degraded =
+                    if (isQingshuiFeatureError(error)) features.degradeOnError() else null
+                if (degraded == null || onQingshuiDegrade == null) throw error
+                Log.w(
+                    TAG,
+                    "Qingshui feature rejected by server, auto-disabling: $features -> $degraded",
+                    error,
+                )
+                features = degraded
+                onQingshuiDegrade(degraded)
+            }
+        }
+    }
+
+    /** 判断错误是否可能由清水特色功能引起：网络故障与鉴权/限流类错误不算。 */
+    private fun isQingshuiFeatureError(error: Throwable): Boolean {
+        if (error is IOException) return false
+        val message = error.message.orEmpty()
+        return !Regex("""\b(401|403|429)\b""").containsMatchIn(message)
+    }
+
+    private suspend fun generateWithFeatures(
+        features: QingshuiFeatures,
+        assistant: Assistant,
+        settings: Settings,
+        messages: List<UIMessage>,
+        onUpdateMessages: suspend (List<UIMessage>) -> Unit,
+        transformers: List<MessageTransformer>,
+        model: Model,
+        providerImpl: Provider<ProviderSetting>,
+        provider: ProviderSetting,
+        tools: List<Tool>,
+        memories: List<AssistantMemory>,
+        stream: Boolean,
+        processingStatus: MutableStateFlow<String?> = MutableStateFlow(null),
+        conversationSystemPrompt: String? = null,
+        conversationId: Uuid? = null,
+        conversationModeInjectionIds: Set<Uuid> = emptySet(),
+        conversationLorebookIds: Set<Uuid> = emptySet(),
+        workspaceCwd: String? = null,
+    ) {
+        val prepared = prepareQingshuiRequest(
+            messages = buildList {
             val system = buildString {
                 val effectiveSystemPrompt =
                     if (assistant.allowConversationSystemPrompt && !conversationSystemPrompt.isNullOrBlank()) {
@@ -375,16 +460,21 @@ class GenerationLoop(
             }
             addAll(messages.limitContext(assistant.contextMessageLimit))
         }.transforms(
-            transformers = transformers,
-            context = context,
-            model = model,
-            assistant = assistant,
-            settings = settings,
-            conversationModeInjectionIds = conversationModeInjectionIds,
-            conversationLorebookIds = conversationLorebookIds,
-            processingStatus = processingStatus,
-            workspaceCwd = workspaceCwd,
+                transformers = transformers,
+                context = context,
+                model = model,
+                assistant = assistant,
+                settings = settings,
+                conversationModeInjectionIds = conversationModeInjectionIds,
+                conversationLorebookIds = conversationLorebookIds,
+                processingStatus = processingStatus,
+                workspaceCwd = workspaceCwd,
+            ),
+            tools = tools,
+            features = features,
+            modelSupportsTool = model.abilities.contains(ModelAbility.TOOL),
         )
+        val internalMessages = prepared.messages
 
         var messages: List<UIMessage> = messages
         val params = TextGenerationParams(
@@ -392,7 +482,7 @@ class GenerationLoop(
             temperature = assistant.temperature,
             topP = assistant.topP,
             maxTokens = assistant.maxTokens,
-            tools = tools,
+            tools = prepared.tools,
             reasoningLevel = assistant.reasoningLevel,
             customHeaders = buildList {
                 addAll(assistant.customHeaders)
@@ -473,6 +563,12 @@ class GenerationLoop(
             }
         } finally {
             processingStatus.value = null
+        }
+
+        // 清水特色功能收尾：补齐预填充开场 / 解析本地 XML 工具调用
+        val finalizedMessages = finalizeQingshuiResponse(messages, prepared.prefill, prepared.xmlToolProtocol)
+        if (finalizedMessages !== messages) {
+            onUpdateMessages(finalizedMessages)
         }
     }
 

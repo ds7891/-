@@ -57,6 +57,7 @@ import me.rerere.hugeicons.stroke.Voice
 import me.rerere.hugeicons.stroke.Camera01
 import me.rerere.hugeicons.stroke.Codesandbox
 import me.rerere.hugeicons.stroke.ComputerTerminal01
+import me.rerere.hugeicons.stroke.Delete02
 import me.rerere.hugeicons.stroke.Files02
 import me.rerere.hugeicons.stroke.Folder01
 import me.rerere.hugeicons.stroke.Image02
@@ -72,6 +73,7 @@ import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.getCurrentChatModel
 import me.rerere.rikkahub.data.datastore.findProvider
 import me.rerere.rikkahub.data.db.entity.WorkspaceEntity
+import me.rerere.rikkahub.data.files.TrashManager
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.repository.WorkspaceRepository
@@ -111,7 +113,9 @@ internal fun FilesPicker(
     val provider = settings.getCurrentChatModel()?.findProvider(providers = settings.providers)
     val navController = LocalNavController.current
     val workspaceRepository: WorkspaceRepository = koinInject()
+    val trashManager: TrashManager = koinInject()
     val workspaces by workspaceRepository.listFlow().collectAsState(initial = emptyList())
+    var showTrashSheet by remember { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
@@ -178,6 +182,38 @@ internal fun FilesPicker(
                 onUpdateAssistant = onUpdateAssistant,
             )
         }
+
+        // 最近删除：AI 删除的文件先落到这里，不会立刻销毁
+        val trashCount = remember { trashManager.count() }
+        ListItem(
+            leadingContent = {
+                Icon(
+                    imageVector = HugeIcons.Delete02,
+                    contentDescription = stringResource(R.string.qingshui_trash_title),
+                )
+            },
+            headlineContent = {
+                Text(stringResource(R.string.qingshui_trash_title))
+            },
+            supportingContent = {
+                Text(stringResource(R.string.qingshui_trash_desc))
+            },
+            trailingContent = {
+                if (trashCount > 0) {
+                    Text(
+                        text = trashCount.toString(),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
+            },
+            colors = ListItemDefaults.colors(
+                containerColor = MaterialTheme.colorScheme.surfaceContainer
+            ),
+            modifier = Modifier
+                .clip(MaterialTheme.shapes.large)
+                .clickable { showTrashSheet = true },
+        )
 
         // Extensions (Quick Messages + Prompt Injections + Skills)
         val modeAndLorebookCount =
@@ -306,6 +342,14 @@ internal fun FilesPicker(
         }, onConfirm = { additionalPrompt, targetTokens, keepRecentMessages ->
             onCompressContext(additionalPrompt, targetTokens, keepRecentMessages)
         })
+    }
+
+    // 最近删除 Sheet
+    if (showTrashSheet) {
+        TrashSheet(
+            trashManager = trashManager,
+            onDismiss = { showTrashSheet = false },
+        )
     }
 }
 

@@ -88,7 +88,7 @@ class ImgGenVM(
 
     val pager = Pager(
         config = PagingConfig(pageSize = 20, enablePlaceholders = false),
-        pagingSourceFactory = { genMediaRepository.getAllMedia() }
+        pagingSourceFactory = { genMediaRepository.getMediaByTypes(GenMediaEntity.IMAGE_TYPES) }
     )
     val generatedImages: Flow<PagingData<GeneratedImage>> = pager.flow
         .map { pagingData ->

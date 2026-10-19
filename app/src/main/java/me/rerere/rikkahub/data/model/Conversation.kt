@@ -31,6 +31,8 @@ data class Conversation(
     val workspaceCwd: String? = null,
     // 所属文件夹（助手内分组），null 表示未归入任何文件夹
     val folderId: Uuid? = null,
+    // 「上下文消耗」面板的自定义参考窗口（token 数），null 表示使用默认值
+    val contextReferenceWindow: Int? = null,
     @Transient
     val newConversation: Boolean = false
 ) {

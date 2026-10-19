@@ -100,18 +100,21 @@ import me.rerere.workspace.WorkspaceStorageArea
 import me.rerere.rikkahub.ui.pages.favorite.FavoritePage
 import me.rerere.rikkahub.ui.pages.history.HistoryPage
 import me.rerere.rikkahub.ui.pages.imggen.ImageGenPage
+import me.rerere.rikkahub.ui.pages.videogen.VideoGenPage
 import me.rerere.rikkahub.ui.pages.log.LogPage
 import me.rerere.rikkahub.ui.pages.media.ImageEditorPage
 import me.rerere.rikkahub.ui.pages.media.MediaBrowserPage
 import me.rerere.rikkahub.ui.pages.media.VideoPlayerPage
 import me.rerere.rikkahub.ui.pages.search.SearchPage
 import me.rerere.rikkahub.ui.pages.setting.SettingAboutPage
+import me.rerere.rikkahub.ui.pages.setting.SettingBuiltinModelPage
 import me.rerere.rikkahub.ui.pages.setting.SettingPreferencesPage
 import me.rerere.rikkahub.ui.pages.setting.SettingPreferencesThemePage
 import me.rerere.rikkahub.ui.pages.setting.SettingPreferencesNotificationPage
 import me.rerere.rikkahub.ui.pages.setting.SettingPreferencesGeneralPage
 import me.rerere.rikkahub.ui.pages.setting.SettingPreferencesNetworkPage
 import me.rerere.rikkahub.ui.pages.setting.SettingPreferencesUIPage
+import me.rerere.rikkahub.ui.pages.setting.SettingQingshuiFeaturesPage
 import me.rerere.rikkahub.ui.pages.setting.SettingThemePage
 import me.rerere.rikkahub.ui.pages.setting.SettingDonatePage
 import me.rerere.rikkahub.ui.pages.setting.SettingFilesPage
@@ -400,6 +403,10 @@ class RouteActivity : ComponentActivity() {
                                 ImageGenPage()
                             }
 
+                            entry<Screen.VideoGen> {
+                                VideoGenPage()
+                            }
+
                             entry<Screen.WebView> { key ->
                                 WebViewPage(key.url, key.contentId)
                             }
@@ -432,8 +439,16 @@ class RouteActivity : ComponentActivity() {
                                 SettingPreferencesNetworkPage()
                             }
 
+                            entry<Screen.SettingQingshuiFeatures> {
+                                SettingQingshuiFeaturesPage()
+                            }
+
                             entry<Screen.SettingProvider> {
                                 SettingProviderPage()
+                            }
+
+                            entry<Screen.SettingBuiltinModel> {
+                                SettingBuiltinModelPage()
                             }
 
                             entry<Screen.SettingProviderDetail> { key ->
@@ -551,16 +566,6 @@ class RouteActivity : ComponentActivity() {
                             }
                         }
                     )
-                    if (BuildConfig.DEBUG) {
-                        Text(
-                            text = "[开发模式]",
-                            modifier = Modifier
-                                .align(Alignment.TopCenter)
-                                .padding(top = 4.dp),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.error.copy(alpha = 0.7f)
-                        )
-                    }
                     AnimatedVisibility(
                         visible = migrationState is MigrationState.Migrating,
                         enter = fadeIn(),
@@ -657,6 +662,9 @@ sealed interface Screen : NavKey {
     data object ImageGen : Screen
 
     @Serializable
+    data object VideoGen : Screen
+
+    @Serializable
     data class WebView(val url: String = "", val contentId: String = "") : Screen
 
     @Serializable
@@ -681,7 +689,13 @@ sealed interface Screen : NavKey {
     data object SettingPreferencesNetwork : Screen
 
     @Serializable
+    data object SettingQingshuiFeatures : Screen
+
+    @Serializable
     data object SettingProvider : Screen
+
+    @Serializable
+    data object SettingBuiltinModel : Screen
 
     @Serializable
     data class SettingProviderDetail(val providerId: String) : Screen

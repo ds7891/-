@@ -11,11 +11,14 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -23,6 +26,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.ProvideTextStyle
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -72,6 +76,7 @@ import me.rerere.ai.ui.isEmptyUIMessage
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.File02
 import me.rerere.hugeicons.stroke.MusicNote03
+import me.rerere.hugeicons.stroke.Play
 import me.rerere.hugeicons.stroke.Video01
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.Screen
@@ -79,6 +84,7 @@ import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.AssistantAffectScope
 import me.rerere.rikkahub.data.model.MessageNode
 import me.rerere.rikkahub.data.model.replaceRegexes
+import me.rerere.rikkahub.service.INTERRUPTED_TOOL_RESULT_MARKER
 import me.rerere.rikkahub.ui.components.richtext.MarkdownBlock
 import me.rerere.rikkahub.ui.components.richtext.ZoomableAsyncImage
 import me.rerere.rikkahub.ui.components.richtext.buildMarkdownPreviewHtml
@@ -107,10 +113,12 @@ fun ChatMessage(
     lastMessage: Boolean = false,
     onFork: () -> Unit,
     onRegenerate: () -> Unit,
+    onContinue: () -> Unit = {},
     onEdit: () -> Unit,
     onShare: () -> Unit,
     onDelete: () -> Unit,
     onUpdate: (MessageNode) -> Unit,
+    onQuote: () -> Unit = {},
     isFavorite: Boolean = false,
     onToggleFavorite: (() -> Unit)? = null,
     onTranslate: ((UIMessage, Locale) -> Unit)? = null,
@@ -179,6 +187,34 @@ fun ChatMessage(
             }
         }
 
+        // 输出被中断/异常结束时，在输出下方提供「继续」入口，从半截内容接着补全
+        val showContinue = lastMessage &&
+            !loading &&
+            message.role == MessageRole.ASSISTANT &&
+            message.isInterruptedResponse()
+        AnimatedVisibility(
+            visible = showContinue,
+            enter = fadeIn() + slideInVertically { it / 2 },
+            exit = fadeOut() + slideOutVertically { it / 2 },
+        ) {
+            OutlinedButton(
+                onClick = onContinue,
+                modifier = Modifier.padding(top = 4.dp),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+            ) {
+                Icon(
+                    imageVector = HugeIcons.Play,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp),
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    text = "继续",
+                    style = MaterialTheme.typography.labelMedium,
+                )
+            }
+        }
+
         val showActions = if (lastMessage) {
             !loading
         } else {
@@ -228,6 +264,7 @@ fun ChatMessage(
             onSelectAndCopy = {
                 showSelectCopySheet = true
             },
+            onQuote = onQuote,
             isFavorite = isFavorite,
             onToggleFavorite = onToggleFavorite,
             onWebViewPreview = {
@@ -259,6 +296,37 @@ fun ChatMessage(
             }
         )
     }
+}
+
+/**
+ * 判断这条助手消息是否为「被中断/异常结束」的未完成回复。
+ *
+ * 正常收尾时流式结束事件会写入 [UIMessage.finishedAt]，而用户停止或链路异常
+ * 导致的提前结束不会写入，因此它为空即说明回复是半截的；
+ * 若停止发生在工具执行过程中，工具结果会被写入取消标记，可据此一并识别；
+ * 另外，被上游输出上限截断的回复虽然正常收尾，但内容仍是半截的，同样可继续。
+ */
+private fun UIMessage.isInterruptedResponse(): Boolean {
+    if (role != MessageRole.ASSISTANT) return false
+    if (finishReason.isTruncatedFinishReason()) return true
+    if (finishedAt == null) return true
+    return getTools().any { tool ->
+        tool.output
+            .filterIsInstance<UIMessagePart.Text>()
+            .any { it.text.contains(INTERRUPTED_TOOL_RESULT_MARKER) }
+    }
+}
+
+/** 上游因达到输出上限而截断的结束原因，各 Provider 命名不同。 */
+private fun String?.isTruncatedFinishReason(): Boolean = when (this?.lowercase()) {
+    "length",
+    "max_tokens",
+    "max_output_tokens",
+    "incomplete:max_output_tokens",
+    "token_limit",
+    -> true
+
+    else -> false
 }
 
 @OptIn(FlowPreview::class)

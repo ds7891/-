@@ -231,6 +231,8 @@ fun S3Tab(
                                         when (item) {
                                             S3Config.BackupItem.DATABASE -> stringResource(R.string.backup_page_chat_records)
                                             S3Config.BackupItem.FILES -> stringResource(R.string.backup_page_files)
+                                            S3Config.BackupItem.MEDIA -> stringResource(R.string.backup_page_media)
+                                            S3Config.BackupItem.SUB_AGENTS -> stringResource(R.string.backup_page_sub_agents)
                                         }
                                     )
                                 }

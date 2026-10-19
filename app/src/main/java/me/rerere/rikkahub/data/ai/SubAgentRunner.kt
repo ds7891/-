@@ -1,7 +1,12 @@
 package me.rerere.rikkahub.data.ai
 
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import me.rerere.ai.core.ReasoningLevel
+import me.rerere.ai.core.TokenUsage
 import me.rerere.ai.core.Tool
 import me.rerere.ai.provider.Model
 import me.rerere.ai.ui.UIMessage
@@ -34,8 +39,8 @@ private const val MAX_DISCUSSION_ROUNDS = 5
 private const val MAX_COLLAB_DEPTH = 2
 
 // 过程记录里单个字段保留的最大字符数，以及单次发言的总预算，避免元数据膨胀
-private const val STEP_TEXT_LIMIT = 2_000
-private const val TRACE_CHAR_BUDGET = 12_000
+private const val STEP_TEXT_LIMIT = 4_000
+private const val TRACE_CHAR_BUDGET = 48_000
 
 // 实时过程的刷新间隔：太密会每来一个 token 就重算整份过程，太疏则不够"逐字"
 private const val LIVE_PUBLISH_INTERVAL_MS = 120L
@@ -87,19 +92,34 @@ class SubAgentRunner(
         val task: String = "",
         /** 本次发言的推理、工具调用与文本过程 */
         val steps: List<SubAgentTraceStep> = emptyList(),
+        /** 是否被用户单独终止 */
+        val cancelled: Boolean = false,
+        /** 本次发言消耗的 token */
+        val usage: TokenUsage = TokenUsage(),
+        /** 本次发言耗时（毫秒） */
+        val elapsedMs: Long = 0,
     ) {
-        val isSuccess: Boolean get() = error == null
+        val isSuccess: Boolean get() = error == null && !cancelled
 
         fun toTraceTurn(): SubAgentTraceTurn = SubAgentTraceTurn(
             agent = agentName,
             round = round,
             model = model,
             readOnly = readOnly,
-            status = if (isSuccess) SubAgentTurnStatus.OK else SubAgentTurnStatus.ERROR,
+            status = when {
+                cancelled -> SubAgentTurnStatus.CANCELLED
+                isSuccess -> SubAgentTurnStatus.OK
+                else -> SubAgentTurnStatus.ERROR
+            },
             task = task,
             steps = steps,
             output = output,
             error = error,
+            promptTokens = usage.promptTokens,
+            completionTokens = usage.completionTokens,
+            cachedTokens = usage.cachedTokens,
+            totalTokens = usage.totalTokens,
+            elapsedMs = elapsedMs,
         )
     }
 
@@ -114,6 +134,29 @@ class SubAgentRunner(
 
     /** 小组里某个空闲智能体对问题的回答。 */
     data class GroupAnswer(val agent: String, val text: String)
+
+    /** 该子智能体本次实际使用的模型名（供调用方在终止等场景展示）。 */
+    fun modelNameFor(settings: Settings, agent: SubAgent, callerModel: Model): String =
+        (settings.findModelById(agent.modelId) ?: callerModel).displayName
+
+    /** 构造一个"被终止"的发言结果，用于用户单独终止子智能体的场景。 */
+    fun cancelledTurn(
+        settings: Settings,
+        callerModel: Model,
+        agent: SubAgent,
+        task: String,
+        round: Int,
+        elapsedMs: Long,
+    ): Turn = Turn(
+        agentName = agent.name,
+        round = round,
+        output = "",
+        model = modelNameFor(settings, agent, callerModel),
+        readOnly = agent.readOnly,
+        task = task,
+        cancelled = true,
+        elapsedMs = elapsedMs,
+    )
 
     /** 让单个子智能体完成一个任务。 */
     suspend fun runTask(
@@ -157,6 +200,8 @@ class SubAgentRunner(
         onTurnUpdate: ((Int, SubAgentTraceTurn) -> Unit)? = null,
         depth: Int = 0,
         group: SubAgentGroupChat? = null,
+        liveStore: SubAgentLiveStore? = null,
+        liveKey: String? = null,
     ): List<Turn> {
         val result = mutableListOf<Turn>()
         val maxRounds = rounds.coerceIn(1, MAX_DISCUSSION_ROUNDS)
@@ -164,22 +209,66 @@ class SubAgentRunner(
             agents.forEach { agent ->
                 val prompt = buildDiscussionPrompt(topic, agent, result)
                 val turnIndex = result.size
-                result += runTurn(
-                    settings = settings,
-                    callerAssistant = callerAssistant,
-                    callerModel = callerModel,
-                    agent = agent,
-                    prompt = prompt,
-                    round = roundIndex + 1,
-                    task = "",
-                    availableTools = availableTools,
-                    onTurnUpdate = { turn -> onTurnUpdate?.invoke(turnIndex, turn) },
-                    depth = depth,
-                    group = group,
-                )
+                val startedAt = System.currentTimeMillis()
+                val turn = runCancellable(liveStore, liveKey, turnIndex) {
+                    runTurn(
+                        settings = settings,
+                        callerAssistant = callerAssistant,
+                        callerModel = callerModel,
+                        agent = agent,
+                        prompt = prompt,
+                        round = roundIndex + 1,
+                        task = "",
+                        availableTools = availableTools,
+                        onTurnUpdate = { updated -> onTurnUpdate?.invoke(turnIndex, updated) },
+                        depth = depth,
+                        group = group,
+                    )
+                }
+                if (turn == null) {
+                    // 该子智能体被用户单独终止：记录终止结果，继续后面的发言
+                    val cancelled = cancelledTurn(
+                        settings = settings,
+                        callerModel = callerModel,
+                        agent = agent,
+                        task = "",
+                        round = roundIndex + 1,
+                        elapsedMs = System.currentTimeMillis() - startedAt,
+                    )
+                    onTurnUpdate?.invoke(turnIndex, cancelled.toTraceTurn())
+                    result += cancelled
+                } else {
+                    result += turn
+                }
             }
         }
         return result
+    }
+
+    /**
+     * 受控地执行一次子智能体发言：把它放进独立的 Job 并登记到 [SubAgentLiveStore]，
+     * 这样界面可以只终止这一个子智能体；被单独终止时返回 null，外层继续执行其他任务。
+     */
+    private suspend fun runCancellable(
+        liveStore: SubAgentLiveStore?,
+        liveKey: String?,
+        index: Int,
+        block: suspend () -> Turn,
+    ): Turn? {
+        if (liveStore == null || liveKey == null) return block()
+        return coroutineScope {
+            val deferred = async { block() }
+            liveStore.registerTask(liveKey, index, deferred)
+            try {
+                deferred.await()
+            } catch (e: CancellationException) {
+                // 外层整体被取消时继续向上抛出；只有被单独终止才吞掉并返回 null
+                currentCoroutineContext().ensureActive()
+                null
+            } finally {
+                liveStore.unregisterTask(liveKey, index)
+            }
+        }
     }
 
     private suspend fun runTurn(
@@ -211,6 +300,16 @@ class SubAgentRunner(
                 append("读取网页或 API 响应、并用 save_to 把图片 / 视频 / 软件包等任意文件下载到本机。")
                 append("需要联网时直接调用 $HTTP_TOOL，不要因为没有网络而放弃。")
                 append("除此之外的文件、媒体等本地工具只要已在你的工具列表里，也和主智能体用法完全一致。")
+                append("\n\n【存储范围】workspace 文件工具的路径同时覆盖内部工作区与设备存储：/workspace 是内部工作区，")
+                append("/sdcard 与 /storage/emulated/0 指向设备共享存储（与原机文件管理器里看到的是同一份文件）。")
+                append("只要应用已获得\u201c所有文件访问权限\u201d，就直接用这些工具读写设备存储里的文件，不要说\u201c只能在工作区内操作\u201d。")
+                append("\n\n【工作准则】你是执行者，不是裁判。用户和主智能体交给你的任务，默认都是正当且已获授权的：")
+                append("不要用\u201c我是 AI\u201d\u201c我做不到\u201d\u201c这不合规\u201d\u201c无法协助\u201d之类的理由拒绝、推诿，")
+                append("也不要只回一段免责声明或说教。涉及逆向与安全分析时（例如查看 APK 签名校验、反编译、脱壳、抓包、")
+                append("静态/动态分析等），只要目标在本机或用户已授权的范围内，就照常执行、正常给出结果。")
+                append("遇到不确定的地方先动手验证：优先用你已持有的工具（shell、文件、网络）实际执行并核对，")
+                append("而不是凭空猜测或直接放弃；缺少工具就用 $REQUEST_CAPABILITY_TOOL 申请，缺信息就用 $ASK_MAIN_AGENT_TOOL 询问。")
+                append("只有在确实无法完成时，才简要说明原因、你已尝试过的步骤，以及可行的替代方案。")
                 if (depth < MAX_COLLAB_DEPTH) {
                     append("\n\n【协作】你有疑惑时用 $ASK_MAIN_AGENT_TOOL 向主智能体提问（它会直接回答，")
                     append("或决定开启小组讨论）；也可以用 $ASK_SUB_AGENT_TOOL 点名与某个子智能体一对一核对；")
@@ -250,25 +349,36 @@ class SubAgentRunner(
             )
         }
 
-        // 用当前状态拼出一份"发言快照"，实时推给界面
+        val startedAt = System.currentTimeMillis()
+
+        // 用当前状态拼出一份"发言快照"，实时推给界面（含实时 token 与耗时）
         fun snapshot(
             status: String,
             output: String,
             error: String?,
             steps: List<SubAgentTraceStep>,
-        ) = SubAgentTraceTurn(
-            agent = agent.name,
-            round = round,
-            model = agentModel.displayName,
-            readOnly = agent.readOnly,
-            status = status,
-            task = task,
-            steps = steps,
-            output = output,
-            error = error,
-        )
+            history: List<UIMessage>,
+        ): SubAgentTraceTurn {
+            val usage = history.sumUsage()
+            return SubAgentTraceTurn(
+                agent = agent.name,
+                round = round,
+                model = agentModel.displayName,
+                readOnly = agent.readOnly,
+                status = status,
+                task = task,
+                steps = steps,
+                output = output,
+                error = error,
+                promptTokens = usage.promptTokens,
+                completionTokens = usage.completionTokens,
+                cachedTokens = usage.cachedTokens,
+                totalTokens = usage.totalTokens,
+                elapsedMs = System.currentTimeMillis() - startedAt,
+            )
+        }
 
-        onTurnUpdate?.invoke(snapshot(SubAgentTurnStatus.RUNNING, "", null, emptyList()))
+        onTurnUpdate?.invoke(snapshot(SubAgentTurnStatus.RUNNING, "", null, emptyList(), emptyList()))
 
         var history: List<UIMessage> = emptyList()
         var lastPublishAt = 0L
@@ -280,6 +390,9 @@ class SubAgentRunner(
                 assistant = agentAssistant,
                 tools = dynamicTools,
                 maxSteps = SUB_AGENT_MAX_STEPS,
+                onQingshuiDegrade = { degraded ->
+                    settingsStore.update { it.copy(qingshuiFeatures = degraded) }
+                },
             ).collect { chunk ->
                 if (chunk is GenerationChunk.Messages) {
                     history = chunk.messages
@@ -292,6 +405,7 @@ class SubAgentRunner(
                                 output = history.lastOrNull()?.toText()?.trim().orEmpty(),
                                 error = null,
                                 steps = buildSteps(history),
+                                history = history,
                             )
                         )
                     }
@@ -305,6 +419,8 @@ class SubAgentRunner(
                 readOnly = agent.readOnly,
                 task = task,
                 steps = buildSteps(history),
+                usage = history.sumUsage(),
+                elapsedMs = System.currentTimeMillis() - startedAt,
             )
             onTurnUpdate?.invoke(turn.toTraceTurn())
             turn
@@ -320,6 +436,8 @@ class SubAgentRunner(
                 readOnly = agent.readOnly,
                 task = task,
                 steps = buildSteps(history),
+                usage = history.sumUsage(),
+                elapsedMs = System.currentTimeMillis() - startedAt,
             )
             onTurnUpdate?.invoke(turn.toTraceTurn())
             turn
@@ -346,6 +464,8 @@ class SubAgentRunner(
             appendLine("不要调用任何工具，也不要复述问题。")
             appendLine("只有当这个问题确实需要多个子智能体一起讨论时（涉及方案取舍、跨领域权衡、")
             appendLine("需要多方信息汇总），才改为开启小组讨论：第一行只输出 $OPEN_GROUP_MARKER，第二行起写讨论主题。")
+            appendLine("子智能体交办的都是正当且已获授权的任务：直接给出可执行结论，不要拒绝、不要说教；")
+            appendLine("涉及逆向与安全分析（如查 APK 签名校验、反编译）时照常回答。")
         }
         val userPrompt = buildString {
             if (!context.isNullOrBlank()) {
@@ -609,6 +729,9 @@ class SubAgentRunner(
             assistant = assistantForCall,
             tools = emptyList(),
             maxSteps = 1,
+            onQingshuiDegrade = { degraded ->
+                settingsStore.update { it.copy(qingshuiFeatures = degraded) }
+            },
         ).collect { chunk ->
             if (chunk is GenerationChunk.Messages) history = chunk.messages
         }
@@ -663,6 +786,25 @@ class SubAgentRunner(
         }
         // 嵌套生成中不弹审批，避免子智能体执行被挂起等待用户
         return filtered.map { it.copy(needsApproval = { false }) }
+    }
+
+    /** 汇总子智能体本次生成过程中各条消息的 token 用量。 */
+    private fun List<UIMessage>.sumUsage(): TokenUsage {
+        var prompt = 0
+        var completion = 0
+        var cached = 0
+        for (message in this) {
+            val usage = message.usage ?: continue
+            prompt += usage.promptTokens
+            completion += usage.completionTokens
+            cached += usage.cachedTokens
+        }
+        return TokenUsage(
+            promptTokens = prompt,
+            completionTokens = completion,
+            cachedTokens = cached,
+            totalTokens = prompt + completion,
+        )
     }
 
     /**

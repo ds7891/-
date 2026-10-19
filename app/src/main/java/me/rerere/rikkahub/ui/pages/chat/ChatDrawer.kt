@@ -380,6 +380,14 @@ fun ChatDrawerContent(
                             }
                         )
                         DropdownMenuItem(
+                            text = { Text(stringResource(R.string.chat_page_menu_video_generation)) },
+                            leadingIcon = { Icon(HugeIcons.Sparkles, null) },
+                            onClick = {
+                                showMenuPopup = false
+                                navController.navigate(Screen.VideoGen)
+                            }
+                        )
+                        DropdownMenuItem(
                             text = { Text(stringResource(R.string.media_browser_menu)) },
                             leadingIcon = { Icon(HugeIcons.Video01, null) },
                             onClick = {

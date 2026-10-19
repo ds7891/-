@@ -5,6 +5,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import me.rerere.rikkahub.data.datastore.SettingsStore
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.uuid.Uuid
 
@@ -42,7 +43,10 @@ data class CapabilityApprovalRequest(
  * 用户选择"下一次默认同意"后，[isAutoApproveEnabled] 变为 true，本次任务后续的所有工具申请都会直接放行，
  * 直到用户发下一条消息（由 [beginUserTurn] 重置）。
  */
-class CapabilityApprovalStore {
+class CapabilityApprovalStore(
+    /** 用于读取「默认申请全部同意」开关。 */
+    private val settingsStore: SettingsStore,
+) {
     private val _requests = MutableStateFlow<List<CapabilityApprovalRequest>>(emptyList())
     val requests: StateFlow<List<CapabilityApprovalRequest>> = _requests.asStateFlow()
 
@@ -53,7 +57,9 @@ class CapabilityApprovalStore {
     private var autoApproveForCurrentTurn = false
 
     /** 是否处于"默认同意"状态：为 true 时子智能体的工具申请直接放行，不再弹窗。 */
-    val isAutoApproveEnabled: Boolean get() = autoApproveForCurrentTurn
+    val isAutoApproveEnabled: Boolean
+        get() = autoApproveForCurrentTurn ||
+            settingsStore.settingsFlow.value.qingshuiFeatures.autoApproveAll
 
     /** 用户发出新消息时调用，令上一轮选择的"下一次默认同意"失效。 */
     fun beginUserTurn() {
@@ -62,6 +68,8 @@ class CapabilityApprovalStore {
 
     /** 发起一次申请并挂起，直到用户做出决定。 */
     suspend fun request(agentName: String, tools: List<String>, reason: String): CapabilityDecision {
+        // 「默认申请全部同意」开启时直接放行，不打扰用户
+        if (isAutoApproveEnabled) return CapabilityDecision.APPROVE
         val id = Uuid.random().toString()
         val deferred = CompletableDeferred<CapabilityDecision>()
         pending[id] = deferred

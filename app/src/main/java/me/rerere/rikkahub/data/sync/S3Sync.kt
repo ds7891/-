@@ -97,12 +97,16 @@ class S3Sync(
     suspend fun prepareBackupFile(config: S3Config): File = backupManager.createBackup(
         includeDatabase = S3Config.BackupItem.DATABASE in config.items,
         includeFiles = S3Config.BackupItem.FILES in config.items,
+        includeMedia = S3Config.BackupItem.MEDIA in config.items,
+        includeSubAgents = S3Config.BackupItem.SUB_AGENTS in config.items,
     )
 
     private suspend fun restoreFromBackupFile(backupFile: File, config: S3Config) = backupManager.stageRestore(
         archive = backupFile,
         includeDatabase = S3Config.BackupItem.DATABASE in config.items,
         includeFiles = S3Config.BackupItem.FILES in config.items,
+        includeMedia = S3Config.BackupItem.MEDIA in config.items,
+        includeSubAgents = S3Config.BackupItem.SUB_AGENTS in config.items,
     )
 
 }

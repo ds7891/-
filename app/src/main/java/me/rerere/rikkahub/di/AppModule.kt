@@ -10,6 +10,12 @@ import me.rerere.rikkahub.data.ai.SubAgentLiveStore
 import me.rerere.rikkahub.data.ai.SubAgentRunner
 import me.rerere.rikkahub.data.ai.tools.local.LocalTools
 import me.rerere.rikkahub.data.ai.tools.ChatToolFactory
+import me.rerere.rikkahub.data.builtin.BuiltinModelRepository
+import me.rerere.rikkahub.data.builtin.BuiltinProxyManager
+import me.rerere.rikkahub.data.builtin.BuiltinProxyServer
+import me.rerere.rikkahub.data.builtin.WorkBuddyAuthApi
+import me.rerere.rikkahub.data.builtin.growth.WorkBuddyGrowthApi
+import me.rerere.rikkahub.data.builtin.growth.WorkBuddyTaskRunner
 import me.rerere.rikkahub.data.event.AppEventBus
 import me.rerere.rikkahub.service.ChatNotificationManager
 import me.rerere.rikkahub.service.ChatService
@@ -93,7 +99,7 @@ val appModule = module {
     }
 
     single {
-        CapabilityApprovalStore()
+        CapabilityApprovalStore(settingsStore = get())
     }
 
     single {
@@ -141,5 +147,32 @@ val appModule = module {
             settingsStore = get(),
             filesManager = get()
         )
+    }
+
+    // ---------------------------------------------------------------- 内置模型
+
+    single {
+        WorkBuddyAuthApi(client = get(), json = get())
+    }
+
+    single {
+        WorkBuddyGrowthApi(client = get(), json = get())
+    }
+
+    single {
+        WorkBuddyTaskRunner(authApi = get(), growthApi = get())
+    }
+
+    single {
+        BuiltinModelRepository(context = get(), authApi = get(), taskRunner = get(), json = get())
+    }
+
+    single {
+        BuiltinProxyServer(repository = get(), client = get(), json = get(), settingsStore = get())
+    }
+
+    // 进程启动即订阅开关，保证「内置模型」开启后本地代理自动运行
+    single(createdAtStart = true) {
+        BuiltinProxyManager(repository = get(), server = get(), appScope = get())
     }
 }

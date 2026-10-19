@@ -11,11 +11,14 @@ interface GenMediaDAO {
     @Query("SELECT * FROM genmediaentity ORDER BY create_at DESC")
     fun getAll(): PagingSource<Int, GenMediaEntity>
 
+    @Query("SELECT * FROM genmediaentity WHERE type IN (:types) ORDER BY create_at DESC")
+    fun getByTypes(types: List<String>): PagingSource<Int, GenMediaEntity>
+
     @Query("SELECT * FROM genmediaentity ORDER BY create_at DESC")
     suspend fun getAllMedia(): List<GenMediaEntity>
 
     @Insert
-    suspend fun insert(media: GenMediaEntity)
+    suspend fun insert(media: GenMediaEntity): Long
 
     @Query("DELETE FROM genmediaentity WHERE id = :id")
     suspend fun delete(id: Int)
