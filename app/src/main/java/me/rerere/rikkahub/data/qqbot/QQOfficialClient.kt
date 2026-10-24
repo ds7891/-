@@ -37,6 +37,9 @@ import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import java.util.concurrent.TimeUnit
 
+private const val OFFICIAL_API_HOST = "https://api.sgroup.qq.com"
+
+
 /**
  * 腾讯官方 QQ 机器人（q.qq.com 申请的 AppID / AppSecret）。
  *
@@ -51,7 +54,6 @@ object QQOfficialClient {
 
     private const val TAG = "QQOfficial"
     private const val TOKEN_URL = "https://bots.qq.com/app/getAppAccessToken"
-    private const val API_HOST = "https://api.sgroup.qq.com"
     private const val JSON_TYPE = "application/json; charset=utf-8"
 
     /** 群与好友事件 intent：1 << 25。 */
@@ -158,7 +160,7 @@ object QQOfficialClient {
         label: String,
     ): QQBotSendResult {
         val request = Request.Builder()
-            .url("$API_HOST$path")
+            .url("$OFFICIAL_API_HOST$path")
             .post(body.toRequestBody(JSON_TYPE.toMediaType()))
             .header("Authorization", "QQBot $token")
             .build()
@@ -183,7 +185,8 @@ object QQOfficialClient {
             val msg = json?.stringish("message").orEmpty().ifBlank { raw.take(140) }
             return QQBotSendResult.Failed("HTTP_$code", "上游拒绝：$msg")
         }
-        return QQBotSendResult.Sent(label, json.stringish("id").ifBlank { json.stringish("message_id") })
+        val id = json?.stringish("id").orEmpty().ifBlank { json?.stringish("message_id").orEmpty() }
+        return QQBotSendResult.Sent(label, id)
     }
 
 }
@@ -243,7 +246,7 @@ class QQOfficialSocketClient(private val scope: CoroutineScope) {
 
     private suspend fun runLoop(config: QQBotConfig) {
         var attempt = 0
-        while (isActive) {
+        while (scope.isActive) {
             _state.value = QQBotLinkState.Connecting
             val token = QQOfficialClient.accessToken(config).getOrElse { err ->
                 _state.value = QQBotLinkState.Offline("取 token 失败：${err.message}")
@@ -355,7 +358,7 @@ class QQOfficialSocketClient(private val scope: CoroutineScope) {
     private suspend fun fetchGateway(token: String): Result<String> = runCatching {
         kotlinx.coroutines.runInterruptible(Dispatchers.IO) {
             val req = Request.Builder()
-                .url("$API_HOST/gateway")
+                .url("$OFFICIAL_API_HOST/gateway")
                 .header("Authorization", "QQBot $token")
                 .build()
             http.newCall(req).execute().use { resp ->

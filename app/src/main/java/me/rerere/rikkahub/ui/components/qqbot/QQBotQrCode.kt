@@ -14,6 +14,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color as ComposeColor
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.unit.dp
 import com.google.zxing.BarcodeFormat
@@ -47,7 +48,7 @@ fun QQBotQrCode(
     Box(
         modifier = modifier
             .size(220.dp)
-            .background(Color.WHITE, RoundedCornerShape(12.dp)),
+            .background(ComposeColor.White, RoundedCornerShape(12.dp)),
         contentAlignment = Alignment.Center,
     ) {
         Image(

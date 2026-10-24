@@ -196,7 +196,9 @@ jobs:
           QINGSHUI_STORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           QINGSHUI_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           QINGSHUI_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
-        run: gradle :app:assembleRelease --no-configuration-cache --stacktrace
+        run: |
+          set -o pipefail
+          gradle :app:assembleRelease --no-configuration-cache --stacktrace 2>&1 | tee /tmp/build.log
 
       # 验收：产物必须是自己的证书。debug 签名或指纹不符一律判失败——
       # 这种包文件名看着是 release，装上去却会跟旧版本签名冲突、覆盖安装失败，很难查。
@@ -238,7 +240,27 @@ jobs:
 
       - name: Build Debug APK
         if: inputs.build_type != 'release'
-        run: gradle :app:assembleDebug --no-configuration-cache --stacktrace
+        run: |
+          set -o pipefail
+          gradle :app:assembleDebug --no-configuration-cache --stacktrace 2>&1 | tee /tmp/build-debug.log
+
+      # 把 Kotlin 编译错误转成 GitHub annotation：点开工作流就能看到具体文件与行号，
+      # 不用下载整份日志再逐行找 e: 开头的行。
+      - name: Report compile errors
+        if: failure()
+        run: |
+          for log in /tmp/build.log /tmp/build-debug.log; do
+            [ -f "$log" ] || continue
+            # 日志里可能带 Actions 时间戳前缀，也可能不带（tee 出来的原始输出），两种都吃
+            grep -E "e: file:///" "$log" | head -40 | while IFS= read -r line; do
+              file=$(printf '%s' "$line" | sed -E 's|.*e: file://([^ :]+).*|\1|; s|^/home/runner/work/[^/]+/[^/]+/||')
+              ln=$(printf '%s' "$line" | sed -E 's|.*\.kt:[0-9]+:([0-9]+).*|\1|')
+              col=$(printf '%s' "$line" | sed -E 's|.*\.kt:([0-9]+):[0-9]+.*|\1|')
+              msg=$(printf '%s' "$line" | sed -E 's|.*\.kt:[0-9]+:[0-9]+ ||' | tr -d '\r' | cut -c1-300)
+              echo "::error file=$file,line=$col,col=$ln,title=Kotlin 编译错误::$msg"
+            done
+            grep -E "^\* What went wrong:" -A 6 "$log" | head -12 || true
+          done
 
       - name: Collect artifacts
         run: |

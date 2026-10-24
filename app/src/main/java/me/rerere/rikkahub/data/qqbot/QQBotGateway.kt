@@ -179,7 +179,7 @@ class QQBotGateway(
     }
 
     /** 记下最近活跃目标：官方协议的 openid 只能从事件里来，主动推送要用。 */
-    private fun rememberTarget(inbound: QQBotInbound) {
+    private suspend fun rememberTarget(inbound: QQBotInbound) {
         settingsStore.update { s ->
             val c = s.qqBotConfig
             val next = if (inbound.isGroup) {
