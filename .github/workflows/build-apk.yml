@@ -2,11 +2,26 @@ name: Build Android APK
 
 on:
   workflow_dispatch:
+    inputs:
+      build_type:
+        description: '打什么包'
+        required: true
+        default: 'release'
+        type: choice
+        options:
+          - release        # 正式签名包
+          - debug          # 测试包
+          - both           # 两个都打
+      expected_sha256:
+        description: '正式签名的证书 SHA-256 指纹（不符则构建失败）'
+        required: false
+        default: '2D:57:C2:6A:86:2D:07:E3:38:72:48:E7:87:85:62:DB:09:E7:D7:1A:05:2E:B2:79:D1:C5:5E:24:80:41:20:14'
+        type: string
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 60
 
     steps:
       - name: Checkout code
@@ -44,12 +59,110 @@ jobs:
         working-directory: web-ui
         run: pnpm install --frozen-lockfile
 
-      - name: Build Debug APK
-        run: gradle assembleDebug --stacktrace
+      # ---------- 正式签名 ----------
+      # keystore 是二进制，Secrets 只能存文本，所以存 base64，这里还原成文件。
+      # 落到 runner.temp 而不是工作区：既不会被后续步骤误删，也不会被打进 artifact。
+      - name: Decode keystore
+        if: inputs.build_type != 'debug'
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          if [ -z "${KEYSTORE_BASE64:-}" ]; then
+            echo "::error::缺少 secret KEYSTORE_BASE64。仓库 Settings → Secrets and variables → Actions 里新建，值填 keystore 的 base64（单行）。"
+            exit 1
+          fi
+          printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+          test -s "$RUNNER_TEMP/release.keystore"
+          echo "keystore 就绪：$(stat -c%s "$RUNNER_TEMP/release.keystore") 字节"
+          echo "QINGSHUI_STORE_FILE=$RUNNER_TEMP/release.keystore" >> "$GITHUB_ENV"
 
-      - name: Upload Debug APK
+      - name: Check signing inputs
+        if: inputs.build_type != 'debug'
+        env:
+          STORE_PW: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_PW: ${{ secrets.KEY_PASSWORD }}
+          ALIAS: ${{ secrets.KEY_ALIAS }}
+        run: |
+          set -euo pipefail
+          [ -n "${STORE_PW:-}" ] || { echo "::error::缺少 secret KEYSTORE_PASSWORD"; exit 1; }
+          [ -n "${KEY_PW:-}" ]   || { echo "::error::缺少 secret KEY_PASSWORD"; exit 1; }
+          [ -n "${ALIAS:-}" ]    || { echo "::error::缺少 secret KEY_ALIAS"; exit 1; }
+          echo "alias = $ALIAS"
+
+      # --no-configuration-cache 必须加：签名配置在 Gradle 配置阶段求值，而 setup-gradle
+      # 会缓存 ~/.gradle（含 configuration cache）。不加这个参数，一旦第一次构建时
+      # secret 还没配好，缓存里就固化了「用 debug 签名」的结果，后面 secret 配对也可能不生效。
+      - name: Build Release APK
+        if: inputs.build_type != 'debug'
+        env:
+          QINGSHUI_STORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          QINGSHUI_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          QINGSHUI_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: gradle :app:assembleRelease --no-configuration-cache --stacktrace
+
+      # 验收：产物必须是自己的证书。debug 签名或指纹不符一律判失败——
+      # 这种包文件名看着是 release，装上去却会跟旧版本签名冲突、覆盖安装失败，很难查。
+      - name: Verify release signature
+        if: inputs.build_type != 'debug'
+        run: |
+          set -euo pipefail
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -name apksigner -type f 2>/dev/null | sort -V | tail -1)
+          [ -n "$APKSIGNER" ] || APKSIGNER=$(find /usr/lib/android-sdk /usr/local/lib/android/sdk -name apksigner -type f 2>/dev/null | sort -V | tail -1)
+          echo "apksigner: $APKSIGNER"
+
+          WANT=$(printf '%s' "${{ inputs.expected_sha256 }}" | tr -d ' :' | tr 'a-f' 'A-F')
+          FAILED=0
+          shopt -s nullglob
+          APKList=(app/build/outputs/apk/release/*.apk)
+          [ ${#APKList[@]} -gt 0 ] || { echo "::error::没有 release APK 产物"; exit 1; }
+
+          for APK in "${APKList[@]}"; do
+            echo "---------- 检查 $(basename "$APK") ----------"
+            "$APKSIGNER" verify --print-certs "$APK" | tee /tmp/cert.txt
+
+            if grep -qi "CN=Android Debug" /tmp/cert.txt; then
+              echo "::error::$(basename "$APK") 是 debug 签名，正式签名没生效"
+              FAILED=1
+              continue
+            fi
+
+            GOT=$(grep -i "certificate SHA-256 digest" /tmp/cert.txt | sed 's/.*: //' | tr -d ' :' | tr 'a-f' 'A-F')
+            if [ -n "$WANT" ] && [ "$GOT" != "$WANT" ]; then
+              echo "::error::$(basename "$APK") 指纹不符  实际=$GOT  预期=$WANT"
+              FAILED=1
+            else
+              echo "签名指纹匹配：$GOT"
+            fi
+          done
+
+          [ "$FAILED" -eq 0 ] || { echo "签名验收未通过"; exit 1; }
+          echo "正式签名验收通过"
+
+      - name: Build Debug APK
+        if: inputs.build_type != 'release'
+        run: gradle :app:assembleDebug --no-configuration-cache --stacktrace
+
+      - name: Collect artifacts
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          for dir in release debug; do
+            d="app/build/outputs/apk/$dir"
+            [ -d "$d" ] || continue
+            for f in "$d"/*.apk; do
+              [ -e "$f" ] || continue
+              # 文件名带构建类型，避免 release/debug 同名文件互相覆盖
+              cp "$f" "out/${dir}-$(basename "$f")"
+            done
+          done
+          echo "=== 产物 ==="
+          ls -lh out/
+
+      - name: Upload APKs
         uses: actions/upload-artifact@v4
         with:
-          name: qingshui-debug-apk
-          path: app/build/outputs/apk/debug/*.apk
+          name: qingshui-apk-${{ inputs.build_type }}
+          path: out/*.apk
           if-no-files-found: error
+          retention-days: 30

@@ -14,6 +14,17 @@ plugins {
     alias(libs.plugins.baselineprofile)
 }
 
+/**
+ * 本地签名配置来源。CI（GitHub Actions）上不存在 local.properties，
+ * 改由 QINGSHUI_* 环境变量提供，两者优先级：环境变量 > local.properties。
+ */
+val localProperties = Properties().apply {
+    val file = rootProject.file("local.properties")
+    if (file.exists()) {
+        FileInputStream(file).use { load(it) }
+    }
+}
+
 android {
     namespace = "me.rerere.rikkahub"
     compileSdk {
@@ -50,37 +61,47 @@ android {
 
     signingConfigs {
         create("release") {
-            val localProperties = Properties()
-            val localPropertiesFile = rootProject.file("local.properties")
+            // 优先级：环境变量（CI / 命令行） > local.properties（本地）
+            fun read(env: String, prop: String): String? =
+                System.getenv(env)?.takeIf { it.isNotBlank() }
+                    ?: localProperties.getProperty(prop)?.takeIf { it.isNotBlank() }
 
-            if (localPropertiesFile.exists()) {
-                localProperties.load(FileInputStream(localPropertiesFile))
+            val storeFilePath = read("QINGSHUI_STORE_FILE", "storeFile")
+            val storePasswordValue = read("QINGSHUI_STORE_PASSWORD", "storePassword")
+            val keyAliasValue = read("QINGSHUI_KEY_ALIAS", "keyAlias")
+            val keyPasswordValue = read("QINGSHUI_KEY_PASSWORD", "keyPassword")
 
-                val storeFilePath = localProperties.getProperty("storeFile")
-                val storePasswordValue = localProperties.getProperty("storePassword")
-                val keyAliasValue = localProperties.getProperty("keyAlias")
-                val keyPasswordValue = localProperties.getProperty("keyPassword")
-
-                if (storeFilePath != null && storePasswordValue != null &&
-                    keyAliasValue != null && keyPasswordValue != null
-                ) {
-                    storeFile = file(storeFilePath)
-                    storePassword = storePasswordValue
-                    keyAlias = keyAliasValue
-                    keyPassword = keyPasswordValue
-                }
+            if (storeFilePath != null && storePasswordValue != null &&
+                keyAliasValue != null && keyPasswordValue != null
+            ) {
+                // rootProject.file() 同时支持绝对路径与相对仓库根目录的路径
+                storeFile = rootProject.file(storeFilePath)
+                storePassword = storePasswordValue
+                keyAlias = keyAliasValue
+                keyPassword = keyPasswordValue
             }
         }
     }
 
     buildTypes {
         release {
-            // 没有配置正式签名时回退到 debug 签名，保证本地/CI 能产出可安装的 release 包
+            // 有正式签名就用正式签名；没有则退回 debug 签名，但会给 versionName 加
+            // -unsigned 后缀并在日志里告警 —— 避免 CI 上悄悄产出一个「看着是正式版、
+            // 其实是 debug 签名」的包，装上去和旧版签名冲突还查不出原因。
             val releaseSigning = signingConfigs.getByName("release")
-            signingConfig = if (releaseSigning.storeFile != null) {
+            val hasReleaseSigning = releaseSigning.storeFile?.exists() == true
+            signingConfig = if (hasReleaseSigning) {
                 releaseSigning
             } else {
+                logger.warn(
+                    "release 签名未配置：检查 local.properties 的 storeFile/storePassword/" +
+                        "keyAlias/keyPassword，或 CI 上的 QINGSHUI_STORE_FILE 等环境变量。" +
+                        "本次 release 包将使用 debug 签名，versionName 带 -unsigned 标记。"
+                )
                 signingConfigs.getByName("debug")
+            }
+            if (!hasReleaseSigning) {
+                versionNameSuffix = "-unsigned"
             }
             optimization {
                 enable = false

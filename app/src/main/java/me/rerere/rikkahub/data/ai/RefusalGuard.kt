@@ -3,6 +3,7 @@ package me.rerere.rikkahub.data.ai
 import me.rerere.ai.core.MessageRole
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
+import me.rerere.rikkahub.data.datastore.WhitewashLevel
 
 /**
  * 【清水 · 拒绝自动重写】
@@ -69,7 +70,7 @@ private val CODE_FENCE = Regex("```[\\s\\S]*?(?:```|$)")
 internal fun isRefusalReply(message: UIMessage): Boolean {
     if (message.role != MessageRole.ASSISTANT) return false
     if (message.parts.any { it is UIMessagePart.Tool }) return false
-    if (message.finishReason.equals("length", ignoreCase = true)) return false
+    if (message.finishReason?.equals("length", ignoreCase = true) == true) return false
 
     val text = message.parts
         .filterIsInstance<UIMessagePart.Text>()
