@@ -132,26 +132,46 @@ jobs:
             # 只把路径写进 GITHUB_ENV（口令仍由后续步骤的 env 注入，不落盘）
             echo "QINGSHUI_STORE_FILE=$RUNNER_TEMP/release.keystore" >> "$GITHUB_ENV"
 
-          elif [ -f keystore/keystore.properties ]; then
+          elif [ -f keystore/keystore.properties ] || [ -d keystore ]; then
             echo "=== 签名来源：B · 仓库内置 keystore/ ==="
-            val() { grep -E "^$1=" keystore/keystore.properties | head -1 | cut -d= -f2- \
-                    | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'; }
+            val() { [ -f keystore/keystore.properties ] && grep -E "^$1=" keystore/keystore.properties | head -1 | cut -d= -f2- \
+                    | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' || true; }
             SP=$(val storePassword); KP=$(val keyPassword)
             AL=$(val keyAlias);      SF=$(val storeFile)
-            [ "$SF" = "" ] && SF="wesdtf698.jks"
-            if [ -z "$SP" ] || [ -z "$KP" ]; then
-              echo "::error::keystore/keystore.properties 里 storePassword / keyPassword 还没填"
-              echo "  打开 keystore/keystore.properties，把这两行等号后面补上你的口令，保存后推送重跑"
+
+            # 把所有问题攒齐了一次报完，省得你修一个跑一次
+            problems=""
+            [ -f keystore/keystore.properties ] || problems="$problems 缺 keystore/keystore.properties"
+            [ -n "$SP" ] || problems="$problems storePassword 为空"
+            [ -n "$KP" ] || problems="$problems keyPassword 为空"
+            [ -n "$AL" ] || problems="$problems keyAlias 为空"
+            if [ -z "$SF" ]; then
+              SF="wesdtf698.jks"
+              echo "  storeFile 未写，按默认 $SF 处理"
+            fi
+            if [ ! -f "keystore/$SF" ]; then
+              # 文件名被改过也认：扫目录里任何 keystore 类文件自动顶上
+              found=$(ls keystore/*.jks keystore/*.keystore keystore/*.p12 keystore/*.pfx 2>/dev/null | head -1)
+              if [ -n "$found" ]; then
+                echo "  ⚠ storeFile='$SF' 不存在，改用目录里实际找到的 $(basename "$found")"
+                SF=$(basename "$found")
+              else
+                problems="$problems 找不到 keystore/$SF（jks 没提交上来）"
+              fi
+            fi
+            if [ -n "$problems" ]; then
+              echo "::error::仓库内置签名配置不完整：$problems"
+              echo ""
+              echo "  最小改动：打开 keystore/keystore.properties，把这两行等号后面补上口令并保存"
+              echo "      storePassword=你的库口令"
+              echo "      keyPassword=你的私钥口令（JKS 里通常和上面一样）"
+              echo "  若 keystore/wesdtf698.jks 也不在仓库里，说明它没被提交，需要一并加上"
               exit 1
             fi
-            if [ -z "$AL" ]; then
-              echo "::error::keystore/keystore.properties 里 keyAlias 没填（应为 wesdtf698）"
-              exit 1
-            fi
-            [ -f "keystore/$SF" ] || { echo "::error::找不到 keystore/$SF"; exit 1; }
             check_jks "keystore/$SF" "仓库内置 keystore" || exit 1
             check_alias "keystore/$SF" "$AL" || exit 1
             echo "  口令已检测到（内容不打印）"
+
 
           else
             echo "::error::没有可用签名：既没有 secret KEYSTORE_BASE64，仓库里也没有 keystore/keystore.properties"
