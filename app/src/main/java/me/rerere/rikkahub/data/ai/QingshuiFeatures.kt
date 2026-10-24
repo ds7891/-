@@ -10,6 +10,7 @@ import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.data.datastore.QingshuiFeatures
 import me.rerere.rikkahub.data.datastore.QingshuiToolProtocol
+import me.rerere.rikkahub.data.datastore.WhitewashLevel
 import me.rerere.rikkahub.utils.JsonInstant
 import kotlin.uuid.Uuid
 
@@ -83,17 +84,35 @@ internal fun QingshuiFeatures.degradeOnError(): QingshuiFeatures? = when {
 }
 
 /**
- * 应用「外部注入防护」「中转站适配」「assistant 预填充锚」，返回真正发送给 Provider 的消息与工具。
+ * 应用「提示词洗白」「拒绝重写」「外部注入防护」「中转站适配」「assistant 预填充锚」，
+ * 返回真正发送给 Provider 的消息与工具。
  *
  * @param modelSupportsTool 当前模型是否声明支持原生工具调用（`ModelAbility.TOOL`），供「自动」协议识别。
+ * @param retryAttempt 拒绝重试的轮次：0 表示首次发送；>0 时强制升到最强洗白并叠加背景陈述。
  */
 internal fun prepareQingshuiRequest(
     messages: List<UIMessage>,
     tools: List<Tool>,
     features: QingshuiFeatures,
     modelSupportsTool: Boolean,
+    retryAttempt: Int = 0,
 ): QingshuiPreparedRequest {
     var result = messages
+
+    // 0) 提示词洗白：只改「用户本人输入」，必须在系统补充 / 中转锚点之前执行，
+    //    否则锚点里的规则文本会被一起改写，反而弱化约束。
+    //    拒绝重试时无条件启用并拉到最强档——重试的目的就是换个说法。
+    if (features.promptWhitewash || retryAttempt > 0) {
+        result = result.applyPromptWhitewash(
+            level = if (retryAttempt > 0) WhitewashLevel.STRONG else features.whitewashLevel,
+            customRules = whitewashCustomRules(features.whitewashCustomRules),
+        )
+    }
+
+    // 0.5) 拒绝重写：把背景陈述拼到问题最前面，逐次加重
+    if (retryAttempt > 0) {
+        result = result.applyRefusalRewrite(retryAttempt)
+    }
 
     // 1) 系统提示补充：防护说明 + 计划模式 + 前缀吸收声明
     val systemAdditions = buildList {

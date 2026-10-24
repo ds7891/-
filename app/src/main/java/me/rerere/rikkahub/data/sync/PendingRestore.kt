@@ -32,6 +32,8 @@ internal class PendingRestore(
     }
 
     suspend fun apply(restoreSettings: suspend (String) -> Unit): Boolean {
+        // 启动关键路径：目录不存在时直接返回，避免冷启动首次磁盘 IO 扫描。
+        if (!root.isDirectory) return false
         // Completed restores must never be replayed, even if cleanup was interrupted.
         root.listFiles()?.filter {
             it.name.startsWith("completed-") || it.name.startsWith("preparing-")

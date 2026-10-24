@@ -209,6 +209,12 @@ fun SettingPage(vm: SettingVM = koinViewModel()) {
                         supportingContent = { Text(stringResource(R.string.setting_page_extensions_desc)) },
                         headlineContent = { Text(stringResource(R.string.setting_page_extensions)) },
                     )
+                    item(
+                        onClick = { navController.navigate(Screen.Plugins) },
+                        leadingContent = { Icon(HugeIcons.Package, null) },
+                        supportingContent = { Text("上传插件包，为应用新增页面、按钮、AI 工具，或拦截请求与响应") },
+                        headlineContent = { Text("插件") },
+                    )
                 }
             }
 

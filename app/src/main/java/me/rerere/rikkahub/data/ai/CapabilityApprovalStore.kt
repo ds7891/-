@@ -42,6 +42,8 @@ data class CapabilityApprovalRequest(
  *
  * 用户选择"下一次默认同意"后，[isAutoApproveEnabled] 变为 true，本次任务后续的所有工具申请都会直接放行，
  * 直到用户发下一条消息（由 [beginUserTurn] 重置）。
+ *
+ * 设置页「默认申请全部同意」开启时，[isAutoApproveEnabled] 恒为 true，不再弹窗。
  */
 class CapabilityApprovalStore(
     /** 用于读取「默认申请全部同意」开关。 */
@@ -68,8 +70,6 @@ class CapabilityApprovalStore(
 
     /** 发起一次申请并挂起，直到用户做出决定。 */
     suspend fun request(agentName: String, tools: List<String>, reason: String): CapabilityDecision {
-        // 「默认申请全部同意」开启时直接放行，不打扰用户
-        if (isAutoApproveEnabled) return CapabilityDecision.APPROVE
         val id = Uuid.random().toString()
         val deferred = CompletableDeferred<CapabilityDecision>()
         pending[id] = deferred

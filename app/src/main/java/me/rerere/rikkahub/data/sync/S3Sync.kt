@@ -99,6 +99,7 @@ class S3Sync(
         includeFiles = S3Config.BackupItem.FILES in config.items,
         includeMedia = S3Config.BackupItem.MEDIA in config.items,
         includeSubAgents = S3Config.BackupItem.SUB_AGENTS in config.items,
+        includeWorkspaces = S3Config.BackupItem.WORKSPACES in config.items,
     )
 
     private suspend fun restoreFromBackupFile(backupFile: File, config: S3Config) = backupManager.stageRestore(
@@ -107,6 +108,7 @@ class S3Sync(
         includeFiles = S3Config.BackupItem.FILES in config.items,
         includeMedia = S3Config.BackupItem.MEDIA in config.items,
         includeSubAgents = S3Config.BackupItem.SUB_AGENTS in config.items,
+        includeWorkspaces = S3Config.BackupItem.WORKSPACES in config.items,
     )
 
 }

@@ -56,8 +56,8 @@ internal fun buildFileSystemTool(context: Context): Tool = Tool(
         mkdir（建目录）、delete（删除）、move（移动/重命名）、copy（复制）、exists（是否存在）、
         stat（详细信息）、search（按文件名搜索）、env（诊断当前存储权限与分区存储状态）。
         read/write/append 默认按 UTF-8 文本处理，可用 encoding=base64 读写二进制；
-        write/append/delete/move/copy 会改动磁盘，需用户确认后才执行；
-        其中 delete 不会真正销毁文件，而是移入「最近删除」，用户可在应用内恢复或彻底删除。
+        write/append/delete/move/copy 会改动磁盘，需用户确认后才执行。
+        delete 不会真正销毁文件，而是移入应用内「最近删除」，用户可在对话页「+ → 最近删除」里恢复或彻底删除。
         任何操作报错时，返回里都会带上 env 诊断字段，可据此判断是权限不足还是被系统存储策略拦截。
     """.trimIndent().replace("\n", " "),
     needsApproval = { args ->

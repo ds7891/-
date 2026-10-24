@@ -105,6 +105,7 @@ import me.rerere.rikkahub.ui.pages.log.LogPage
 import me.rerere.rikkahub.ui.pages.media.ImageEditorPage
 import me.rerere.rikkahub.ui.pages.media.MediaBrowserPage
 import me.rerere.rikkahub.ui.pages.media.VideoPlayerPage
+import me.rerere.rikkahub.ui.pages.plugin.PluginRunnerPage
 import me.rerere.rikkahub.ui.pages.search.SearchPage
 import me.rerere.rikkahub.ui.pages.setting.SettingAboutPage
 import me.rerere.rikkahub.ui.pages.setting.SettingBuiltinModelPage
@@ -115,6 +116,7 @@ import me.rerere.rikkahub.ui.pages.setting.SettingPreferencesGeneralPage
 import me.rerere.rikkahub.ui.pages.setting.SettingPreferencesNetworkPage
 import me.rerere.rikkahub.ui.pages.setting.SettingPreferencesUIPage
 import me.rerere.rikkahub.ui.pages.setting.SettingQingshuiFeaturesPage
+import me.rerere.rikkahub.ui.pages.setting.PluginSettingsPage
 import me.rerere.rikkahub.ui.pages.setting.SettingThemePage
 import me.rerere.rikkahub.ui.pages.setting.SettingDonatePage
 import me.rerere.rikkahub.ui.pages.setting.SettingFilesPage
@@ -443,6 +445,14 @@ class RouteActivity : ComponentActivity() {
                                 SettingQingshuiFeaturesPage()
                             }
 
+                            entry<Screen.Plugins> {
+                                PluginSettingsPage()
+                            }
+
+                            entry<Screen.PluginPage> { key ->
+                                PluginRunnerPage(pluginId = key.pluginId, pageId = key.pageId)
+                            }
+
                             entry<Screen.SettingProvider> {
                                 SettingProviderPage()
                             }
@@ -690,6 +700,12 @@ sealed interface Screen : NavKey {
 
     @Serializable
     data object SettingQingshuiFeatures : Screen
+
+    @Serializable
+    data object Plugins : Screen
+
+    @Serializable
+    data class PluginPage(val pluginId: String, val pageId: String) : Screen
 
     @Serializable
     data object SettingProvider : Screen

@@ -365,14 +365,23 @@ class GenerationLoop(
         onQingshuiDegrade: (suspend (QingshuiFeatures) -> Unit)? = null,
     ) {
         var features = settings.qingshuiFeatures
+        var workingMessages = messages
+        var refusalAttempt = 0
+
         while (true) {
+            // 本次尝试的起点。拒绝重试时回滚到这里，被拒的那条回复不会留在上下文里，
+            // 否则模型会「看见自己刚拒绝过」，下一轮更倾向继续拒绝。
+            val attemptBase = workingMessages
             try {
                 generateWithFeatures(
                     features = features,
                     assistant = assistant,
                     settings = settings,
-                    messages = messages,
-                    onUpdateMessages = onUpdateMessages,
+                    messages = attemptBase,
+                    onUpdateMessages = { updated ->
+                        workingMessages = updated
+                        onUpdateMessages(updated)
+                    },
                     transformers = transformers,
                     model = model,
                     providerImpl = providerImpl,
@@ -386,7 +395,34 @@ class GenerationLoop(
                     conversationModeInjectionIds = conversationModeInjectionIds,
                     conversationLorebookIds = conversationLorebookIds,
                     workspaceCwd = workspaceCwd,
+                    retryAttempt = refusalAttempt,
                 )
+
+                // 拒绝自动重写：判定 → 抹掉这条回复 → 加重说法 → 重发。
+                // 只看「本次尝试新增的助手消息」，避免把上一轮的历史回复误判成这次拒绝。
+                val retryLimit = features.maxRefusalRetries.coerceIn(1, MAX_REFUSAL_RETRY_LIMIT)
+                if (features.autoRetryOnRefusal && refusalAttempt < retryLimit) {
+                    val reply = workingMessages
+                        .drop(attemptBase.size)
+                        .lastOrNull { it.role == MessageRole.ASSISTANT }
+                    if (reply != null && isRefusalReply(reply)) {
+                        refusalAttempt++
+                        Log.i(
+                            TAG,
+                            "generateInternal: refusal detected, rewriting and retrying " +
+                                "($refusalAttempt/$retryLimit)",
+                        )
+                        // 回滚：被拒内容从会话里消失，UI 同步回到发送前的样子
+                        workingMessages = attemptBase
+                        onUpdateMessages(attemptBase)
+                        processingStatus.value = context.getString(
+                            R.string.qingshui_refusal_retrying,
+                            refusalAttempt,
+                            retryLimit,
+                        )
+                        continue
+                    }
+                }
                 return
             } catch (error: Throwable) {
                 if (error is CancellationException) throw error
@@ -430,6 +466,7 @@ class GenerationLoop(
         conversationModeInjectionIds: Set<Uuid> = emptySet(),
         conversationLorebookIds: Set<Uuid> = emptySet(),
         workspaceCwd: String? = null,
+        retryAttempt: Int = 0,
     ) {
         val prepared = prepareQingshuiRequest(
             messages = buildList {
@@ -473,13 +510,21 @@ class GenerationLoop(
             tools = tools,
             features = features,
             modelSupportsTool = model.abilities.contains(ModelAbility.TOOL),
+            retryAttempt = retryAttempt,
         )
         val internalMessages = prepared.messages
 
         var messages: List<UIMessage> = messages
+        // 拒绝重试时抬高采样温度：对齐训练让模型倾向输出低熵的拒绝话术，
+        // 温度上来之后更容易落到「给内容」那条分支上。每轮 +0.1，上限 1.2。
+        val effectiveTemperature = if (retryAttempt > 0) {
+            ((assistant.temperature ?: 0.7f) + 0.1f * retryAttempt).coerceIn(0f, 1.2f)
+        } else {
+            assistant.temperature
+        }
         val params = TextGenerationParams(
             model = model,
-            temperature = assistant.temperature,
+            temperature = effectiveTemperature,
             topP = assistant.topP,
             maxTokens = assistant.maxTokens,
             tools = prepared.tools,

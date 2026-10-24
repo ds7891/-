@@ -357,5 +357,53 @@ private fun AssistantLocalToolContent(
                 },
             )
         }
+
+        // SSH / TCP / WebSocket：补齐 HTTP 覆盖不到的网络访问
+        CardGroup(
+            title = { Text(stringResource(R.string.assistant_page_local_tools_network_card_title)) }
+        ) {
+            item(
+                headlineContent = {
+                    Text(stringResource(R.string.assistant_page_local_tools_ssh_title))
+                },
+                supportingContent = {
+                    Text(stringResource(R.string.assistant_page_local_tools_ssh_desc))
+                },
+                trailingContent = {
+                    Switch(
+                        checked = assistant.localTools.contains(LocalToolOption.Ssh),
+                        onCheckedChange = { toggleLocalTool(LocalToolOption.Ssh, it) }
+                    )
+                }
+            )
+            item(
+                headlineContent = {
+                    Text(stringResource(R.string.assistant_page_local_tools_tcp_title))
+                },
+                supportingContent = {
+                    Text(stringResource(R.string.assistant_page_local_tools_tcp_desc))
+                },
+                trailingContent = {
+                    Switch(
+                        checked = assistant.localTools.contains(LocalToolOption.Tcp),
+                        onCheckedChange = { toggleLocalTool(LocalToolOption.Tcp, it) }
+                    )
+                }
+            )
+            item(
+                headlineContent = {
+                    Text(stringResource(R.string.assistant_page_local_tools_websocket_title))
+                },
+                supportingContent = {
+                    Text(stringResource(R.string.assistant_page_local_tools_websocket_desc))
+                },
+                trailingContent = {
+                    Switch(
+                        checked = assistant.localTools.contains(LocalToolOption.WebSocket),
+                        onCheckedChange = { toggleLocalTool(LocalToolOption.WebSocket, it) }
+                    )
+                }
+            )
+        }
     }
 }

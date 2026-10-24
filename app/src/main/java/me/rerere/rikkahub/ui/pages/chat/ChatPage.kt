@@ -65,6 +65,7 @@ import me.rerere.hugeicons.stroke.MessageAdd01
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.ai.CapabilityApprovalStore
 import me.rerere.rikkahub.data.ai.CapabilityDecision
+import me.rerere.rikkahub.data.ai.TaskHostingState
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.findProvider
 import me.rerere.rikkahub.data.datastore.getCurrentAssistant
@@ -80,6 +81,7 @@ import me.rerere.rikkahub.ui.components.ai.ChatContextInput
 import me.rerere.rikkahub.ui.components.ai.ChatInput
 import me.rerere.rikkahub.ui.components.ai.FilesPicker
 import me.rerere.rikkahub.ui.components.ai.SearchMode
+import me.rerere.rikkahub.ui.components.ai.TaskHostingBanner
 import me.rerere.rikkahub.ui.components.ai.completion.WorkspaceCompletionProvider
 import me.rerere.rikkahub.ui.components.ai.rememberChatAttachmentPickerActions
 import me.rerere.rikkahub.ui.context.LocalNavController
@@ -286,6 +288,7 @@ private fun ChatPageContent(
     val scope = rememberCoroutineScope()
     val toaster = LocalToaster.current
     val workspaceRepository: WorkspaceRepository = koinInject()
+    val hostingState by vm.taskHostingState.collectAsStateWithLifecycle()
     var previewMode by rememberSaveable { mutableStateOf(false) }
     val hazeState = rememberHazeState()
     val assistant = setting.getCurrentAssistant()
@@ -339,7 +342,12 @@ private fun ChatPageContent(
             bottomBar = {
                 val messageQueue by vm.messageQueue.collectAsStateWithLifecycle()
                 val voiceState by vm.voiceSession.state.collectAsStateWithLifecycle()
-                ChatInput(
+                Column {
+                    TaskHostingBanner(
+                        state = hostingState,
+                        onStop = vm::stopTaskHosting,
+                    )
+                    ChatInput(
                     onStartVoiceMode = onStartVoiceMode,
                     voiceState = voiceState,
                     onStopVoiceMode = vm.voiceSession::stop,
@@ -467,6 +475,7 @@ private fun ChatPageContent(
                         showFilesSheet = true
                     },
                 )
+                }
             },
             containerColor = Color.Transparent,
         ) { innerPadding ->
@@ -561,6 +570,7 @@ private fun ChatPageContent(
                 assistant = assistant,
                 vm = vm,
                 attachmentPickerActions = attachmentPickerActions,
+                hostingState = hostingState,
                 onStartVoiceMode = onStartVoiceMode,
                 onDismiss = { showFilesSheet = false },
             )
@@ -636,6 +646,7 @@ private fun ChatFilesPickerSheet(
     assistant: Assistant,
     vm: ChatVM,
     attachmentPickerActions: ChatAttachmentPickerActions,
+    hostingState: TaskHostingState,
     onStartVoiceMode: () -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -694,6 +705,12 @@ private fun ChatFilesPickerSheet(
             onPickVideo = attachmentPickerActions.onPickVideo,
             onPickAudio = attachmentPickerActions.onPickAudio,
             onPickFile = attachmentPickerActions.onPickFile,
+            hostingState = hostingState,
+            onStartTaskHosting = vm::startTaskHosting,
+            onStopTaskHosting = vm::stopTaskHosting,
+            onUpdateQingshuiFeatures = {
+                vm.updateSettings(setting.copy(qingshuiFeatures = it))
+            },
             onStartVoiceMode = if (
                 setting.getSelectedASRProvider()?.supportsServerVadVoiceMode == true &&
                 voiceState.phase == VoicePhase.Off

@@ -3,7 +3,9 @@ package me.rerere.rikkahub.service
 import android.app.Application
 import android.util.Log
 import androidx.core.net.toUri
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
@@ -12,6 +14,7 @@ import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.completeWith
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -44,7 +47,10 @@ import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.ai.CapabilityApprovalStore
 import me.rerere.rikkahub.data.ai.GenerationChunk
 import me.rerere.rikkahub.data.ai.GenerationLoop
+import me.rerere.rikkahub.data.ai.TaskHostingDecision
 import me.rerere.rikkahub.data.ai.TranslationHandler
+import me.rerere.rikkahub.data.ai.buildTaskHostingPrompt
+import me.rerere.rikkahub.data.ai.parseTaskHostingDecision
 import me.rerere.rikkahub.data.ai.mcp.McpManager
 import me.rerere.rikkahub.data.ai.tools.ChatToolFactory
 import me.rerere.rikkahub.data.ai.tools.InvalidMcpServerNamesException
@@ -156,6 +162,9 @@ private val outputTransformers by lazy {
     )
 }
 
+/** 流式生成期间草稿落库的最小间隔（毫秒）。 */
+private const val DRAFT_SAVE_INTERVAL_MS = 1_200L
+
 class ChatService(
     private val context: Application,
     private val appScope: AppScope,
@@ -184,6 +193,9 @@ class ChatService(
         },
         onGenerationFinished = ::onSessionGenerationFinished,
     )
+
+    /** 生成期间的草稿落库任务，每个会话最多一个，避免高频写库。 */
+    private val draftSaveJobs = ConcurrentHashMap<Uuid, Job>()
 
     // 错误状态
     private val _errors = MutableStateFlow<List<ChatError>>(emptyList())
@@ -748,6 +760,8 @@ class ChatService(
                     settingsStore.update { it.copy(qingshuiFeatures = degraded) }
                 },
             ).onCompletion {
+                // 先取消挂起的草稿落库，避免它用旧内容覆盖下面的最终保存
+                cancelDraftSave(conversationId)
                 // 可能被取消了，或者意外结束，兜底更新
                 val updatedConversation = session.finishGeneration { conversation ->
                     saveConversation(conversationId, conversation)
@@ -768,6 +782,8 @@ class ChatService(
                         val updatedConversation = getConversationFlow(conversationId).value
                             .updateCurrentMessages(chunk.messages)
                         updateConversation(conversationId, updatedConversation)
+                        // 周期性把当前进度作为草稿落库，进程被杀时已输出内容不丢
+                        scheduleDraftSave(conversationId)
 
                         // 通知等边缘副作用由 ChatNotificationManager 消费；
                         // tryEmit 不挂起，事件丢失只影响单次通知更新，不能反压生成链
@@ -985,6 +1001,52 @@ class ChatService(
         }
     }
 
+    // ---- AI 任务托管 ----
+
+    /**
+     * 由托管模型根据任务目标与当前对话，决定下一步该以「用户」身份发送什么内容。
+     *
+     * 返回 [TaskHostingDecision]：`done` 为 true 表示托管模型判定任务已完成，无需再发；
+     * 否则 `message` 是要发送的下一条用户消息正文。
+     */
+    suspend fun generateTaskHostingMessage(
+        conversationId: Uuid,
+        objective: String,
+        round: Int,
+        maxRounds: Int,
+        modelId: Uuid?,
+    ): TaskHostingDecision = withContext(Dispatchers.IO) {
+        val settings = settingsStore.settingsFlow.first()
+        val model = settings.findModelById(modelId ?: settings.chatModelId)
+            ?: throw IllegalStateException(context.getString(R.string.task_hosting_no_model))
+        val provider = model.findProvider(settings.providers)
+            ?: throw IllegalStateException(context.getString(R.string.task_hosting_no_provider))
+
+        val history = getConversationFlow(conversationId).value.currentMessages
+            .takeLast(20)
+            .joinToString("\n\n") { message ->
+                val who = if (message.role == MessageRole.ASSISTANT) "AI" else "用户"
+                "$who：${message.summaryAsText(maxLength = 800)}"
+            }
+
+        val providerHandler = providerManager.getProviderByType(provider)
+        val result = providerHandler.generateText(
+            providerSetting = provider,
+            messages = listOf(
+                UIMessage.user(
+                    prompt = buildTaskHostingPrompt(
+                        objective = objective,
+                        round = round,
+                        maxRounds = maxRounds,
+                        history = history,
+                    ),
+                ),
+            ),
+            params = backgroundTextGenerationParams(model, conversationId),
+        )
+        parseTaskHostingDecision(result.message.toText())
+    }
+
     // ---- 压缩对话历史 ----
 
     suspend fun compressConversation(
@@ -1078,6 +1140,31 @@ class ChatService(
         val session = sessionManager.getOrCreate(conversationId)
         checkFilesDelete(conversation, session.state.value)
         session.updateConversation(conversation)
+    }
+
+    /**
+     * 流式生成期间，把最后一个消息节点作为草稿周期性落库，保证进程被杀时已输出的正文/推理/工具卡片不丢。
+     * 同一会话最多每 [DRAFT_SAVE_INTERVAL_MS] 写一次。
+     */
+    private fun scheduleDraftSave(conversationId: Uuid) {
+        if (draftSaveJobs[conversationId]?.isActive == true) return
+        draftSaveJobs[conversationId] = appScope.launch(Dispatchers.IO) {
+            try {
+                delay(DRAFT_SAVE_INTERVAL_MS)
+                runCatching {
+                    val conversation = sessionManager.get(conversationId)?.state?.value
+                        ?: return@runCatching
+                    conversationRepo.saveDraftNode(conversation)
+                }.onFailure { Log.w(TAG, "saveDraftNode failed", it) }
+            } finally {
+                draftSaveJobs.remove(conversationId)
+            }
+        }
+    }
+
+    /** 结束生成前取消可能仍在挂起的草稿任务，避免它用旧内容覆盖最终保存。 */
+    private suspend fun cancelDraftSave(conversationId: Uuid) {
+        draftSaveJobs.remove(conversationId)?.cancelAndJoin()
     }
 
     fun updateConversationState(conversationId: Uuid, update: (Conversation) -> Conversation) {

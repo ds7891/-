@@ -306,7 +306,7 @@ fun ChatMessage(
  * 若停止发生在工具执行过程中，工具结果会被写入取消标记，可据此一并识别；
  * 另外，被上游输出上限截断的回复虽然正常收尾，但内容仍是半截的，同样可继续。
  */
-private fun UIMessage.isInterruptedResponse(): Boolean {
+internal fun UIMessage.isInterruptedResponse(): Boolean {
     if (role != MessageRole.ASSISTANT) return false
     if (finishReason.isTruncatedFinishReason()) return true
     if (finishedAt == null) return true
@@ -387,8 +387,9 @@ private fun MessagePartsBlock(
             is MessagePartBlock.ThinkingBlock -> {
                 if (block.steps.isNotEmpty()) {
                     val isReasoningOnlyBlock = block.steps.fastAll { it is ThinkingStep.ReasoningStep }
+                    // 推理过程在流式期间也会不断增长，同样避免逐 token 的尺寸动画
                     ChainOfThought(
-                        modifier = Modifier.animateContentSize(),
+                        modifier = if (loading) Modifier else Modifier.animateContentSize(),
                         steps = block.steps,
                         collapsedAdaptiveWidth = isReasoningOnlyBlock,
                         cardColors = CardDefaults.cardColors(
@@ -431,21 +432,33 @@ private fun MessagePartsBlock(
             is MessagePartBlock.ContentBlock -> key(block.index) {
                 when (val part = block.part) {
                     is UIMessagePart.Text -> {
+                        // 正则替换结果按文本缓存，避免每次重组都重跑一遍正则。
+                        val displayText = remember(part.text, assistant, role) {
+                            part.text.replaceRegexes(
+                                assistant = assistant,
+                                scope = if (role == MessageRole.USER) {
+                                    AssistantAffectScope.USER
+                                } else {
+                                    AssistantAffectScope.ASSISTANT
+                                },
+                                visual = true,
+                            )
+                        }
+                        // 流式生成期间禁用 animateContentSize：每个 token 都触发一次尺寸动画会明显掉帧。
+                        // 生成结束后再启用，让最终尺寸变化有过渡。
+                        val contentSizeModifier =
+                            if (loading) Modifier else Modifier.animateContentSize()
                         val textContent = @Composable {
                             if (role == MessageRole.USER) {
                                 Surface(
-                                    modifier = Modifier.animateContentSize(),
+                                    modifier = contentSizeModifier,
                                     shape = RoundedCornerShape(16.dp),
                                     color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = settings.displaySetting.bubbleOpacity),
                                     onClick = { onUserMessageClick?.invoke() },
                                 ) {
                                     Column(modifier = Modifier.padding(8.dp)) {
                                         MarkdownBlock(
-                                            content = part.text.replaceRegexes(
-                                                assistant = assistant,
-                                                scope = AssistantAffectScope.USER,
-                                                visual = true,
-                                            ),
+                                            content = displayText,
                                             onClickCitation = handleClickCitation
                                         )
                                     }
@@ -453,31 +466,22 @@ private fun MessagePartsBlock(
                             } else {
                                 if (settings.displaySetting.showAssistantBubble) {
                                     Surface(
-                                        modifier = Modifier.animateContentSize(),
+                                        modifier = contentSizeModifier,
                                         shape = RoundedCornerShape(16.dp),
                                         color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = settings.displaySetting.bubbleOpacity),
                                     ) {
                                         Column(modifier = Modifier.padding(8.dp)) {
                                             MarkdownBlock(
-                                                content = part.text.replaceRegexes(
-                                                    assistant = assistant,
-                                                    scope = AssistantAffectScope.ASSISTANT,
-                                                    visual = true,
-                                                ),
+                                                content = displayText,
                                                 onClickCitation = handleClickCitation,
                                             )
                                         }
                                     }
                                 } else {
                                     MarkdownBlock(
-                                        content = part.text.replaceRegexes(
-                                            assistant = assistant,
-                                            scope = AssistantAffectScope.ASSISTANT,
-                                            visual = true,
-                                        ),
+                                        content = displayText,
                                         onClickCitation = handleClickCitation,
-                                        modifier = Modifier
-                                            .animateContentSize()
+                                        modifier = contentSizeModifier
                                     )
                                 }
                             }

@@ -14,6 +14,7 @@ data class S3Config(
         BackupItem.DATABASE,
         BackupItem.FILES,
         BackupItem.SUB_AGENTS,
+        BackupItem.WORKSPACES,
     ),
 ) {
     val host: String
@@ -40,5 +41,6 @@ data class S3Config(
         FILES,
         MEDIA,
         SUB_AGENTS,
+        WORKSPACES,
     }
 }

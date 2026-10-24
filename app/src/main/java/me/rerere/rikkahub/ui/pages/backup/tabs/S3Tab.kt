@@ -4,6 +4,8 @@ import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.View
 import me.rerere.hugeicons.stroke.ViewOff
 import me.rerere.hugeicons.stroke.Upload02
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -209,7 +211,9 @@ fun S3Tab(
                     headlineContent = { Text(stringResource(R.string.backup_page_backup_items)) },
                     supportingContent = {
                         MultiChoiceSegmentedButtonRow(
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
                         ) {
                             S3Config.BackupItem.entries.forEachIndexed { index, item ->
                                 SegmentedButton(
@@ -233,6 +237,7 @@ fun S3Tab(
                                             S3Config.BackupItem.FILES -> stringResource(R.string.backup_page_files)
                                             S3Config.BackupItem.MEDIA -> stringResource(R.string.backup_page_media)
                                             S3Config.BackupItem.SUB_AGENTS -> stringResource(R.string.backup_page_sub_agents)
+                                            S3Config.BackupItem.WORKSPACES -> stringResource(R.string.backup_page_workspaces)
                                         }
                                     )
                                 }

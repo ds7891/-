@@ -5,6 +5,8 @@ import me.rerere.hugeicons.stroke.File01
 import me.rerere.hugeicons.stroke.FileImport
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
@@ -195,7 +197,9 @@ fun ImportExportTab(
                     headlineContent = { Text(stringResource(R.string.backup_page_backup_items)) },
                     supportingContent = {
                         MultiChoiceSegmentedButtonRow(
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
                         ) {
                             WebDavConfig.BackupItem.entries.forEachIndexed { index, item ->
                                 SegmentedButton(
@@ -219,6 +223,7 @@ fun ImportExportTab(
                                             WebDavConfig.BackupItem.FILES -> stringResource(R.string.backup_page_files)
                                             WebDavConfig.BackupItem.MEDIA -> stringResource(R.string.backup_page_media)
                                             WebDavConfig.BackupItem.SUB_AGENTS -> stringResource(R.string.backup_page_sub_agents)
+                                            WebDavConfig.BackupItem.WORKSPACES -> stringResource(R.string.backup_page_workspaces)
                                         }
                                     )
                                 }

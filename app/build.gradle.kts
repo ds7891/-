@@ -75,7 +75,13 @@ android {
 
     buildTypes {
         release {
-            signingConfig = signingConfigs.getByName("release")
+            // 没有配置正式签名时回退到 debug 签名，保证本地/CI 能产出可安装的 release 包
+            val releaseSigning = signingConfigs.getByName("release")
+            signingConfig = if (releaseSigning.storeFile != null) {
+                releaseSigning
+            } else {
+                signingConfigs.getByName("debug")
+            }
             optimization {
                 enable = false
             }
@@ -276,6 +282,9 @@ dependencies {
     implementation(libs.apksig)
     implementation(libs.baksmali)
     implementation(libs.smali)
+
+    // SSH / SFTP 客户端（网络工具：ssh_exec）
+    implementation(libs.jsch)
 
     // lucide icons
     implementation(libs.lucide.icons)

@@ -39,6 +39,7 @@ class BackupManager(
         includeFiles: Boolean,
         includeMedia: Boolean,
         includeSubAgents: Boolean,
+        includeWorkspaces: Boolean = false,
     ): File = withContext(Dispatchers.IO) {
         val timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"))
         val archive = File.createTempFile("backup_${timestamp}_", ".zip", context.cacheDir)
@@ -79,6 +80,21 @@ class BackupManager(
                         }
                     }
                 }
+                if (includeWorkspaces) {
+                    // 只备份每个工作区的用户文件区 files/，跳过 linux rootfs 与 tmp 缓存
+                    val workspaceRoot = File(context.filesDir, WORKSPACES_FOLDER)
+                    for (workspace in workspaceRoot.listFiles().orEmpty()) {
+                        if (!workspace.isDirectory) continue
+                        val filesDir = File(workspace, WORKSPACE_FILES_DIR)
+                        if (!filesDir.isDirectory) continue
+                        for (file in filesDir.walkTopDown().asSequence().filter { it.isFile }) {
+                            currentCoroutineContext().ensureActive()
+                            val relative = file.relativeTo(filesDir).invariantSeparatorsPath
+                            PendingRestore.resolveInside(filesDir, relative)
+                            addFile(zip, file, "$WORKSPACES_FOLDER/${workspace.name}/$WORKSPACE_FILES_DIR/$relative")
+                        }
+                    }
+                }
             }
             archive
         } catch (e: Throwable) {
@@ -95,6 +111,7 @@ class BackupManager(
         includeFiles: Boolean,
         includeMedia: Boolean,
         includeSubAgents: Boolean,
+        includeWorkspaces: Boolean = false,
     ) =
         withContext(Dispatchers.IO) {
             restoreMutex.withLock {
@@ -119,6 +136,8 @@ class BackupManager(
                                     includeFiles && isAttachment(entry.name) ->
                                         PendingRestore.resolveInside(File(payload, "files"), entry.name)
                                     includeMedia && isMedia(entry.name) ->
+                                        PendingRestore.resolveInside(File(payload, "files"), entry.name)
+                                    includeWorkspaces && isWorkspace(entry.name) ->
                                         PendingRestore.resolveInside(File(payload, "files"), entry.name)
                                     else -> null
                                 }
@@ -193,6 +212,20 @@ class BackupManager(
         return true
     }
 
+    /** 工作区备份条目：workspaces/{id}/files/{相对路径}，只允许用户文件区。 */
+    private fun isWorkspace(name: String): Boolean {
+        if (!name.startsWith("$WORKSPACES_FOLDER/")) return false
+        val relative = name.removePrefix("$WORKSPACES_FOLDER/")
+        val id = relative.substringBefore('/', "")
+        val area = relative.substringAfter('/', "")
+        require(id.isNotBlank()) { "Invalid backup workspace: $name" }
+        require('\\' !in name) { "Invalid backup workspace: $name" }
+        require(area.startsWith("$WORKSPACE_FILES_DIR/") && area.length > WORKSPACE_FILES_DIR.length + 1) {
+            "Invalid backup workspace: $name"
+        }
+        return true
+    }
+
     private fun addFile(zip: ZipOutputStream, file: File, name: String) {
         zip.putNextEntry(ZipEntry(name))
         file.inputStream().use { it.copyTo(zip) }
@@ -201,12 +234,18 @@ class BackupManager(
 
     companion object {
         private val MEDIA_FOLDERS = listOf(FileFolders.IMAGES, FileFolders.VIDEOS)
+        private const val WORKSPACES_FOLDER = "workspaces"
+        private const val WORKSPACE_FILES_DIR = "files"
 
         private fun pendingRestore(context: Context) = PendingRestore(
             root = File(context.noBackupFilesDir, "backup-restore"),
             databaseFile = context.getDatabasePath(SQLiteConfiguration.DATABASE_NAME),
             filesDir = context.filesDir,
         )
+
+        /** 关键路径上的廉价的预检查：只有存在待恢复目录时才需要阻塞等待恢复流程。 */
+        fun hasPendingRestore(context: Context): Boolean =
+            File(context.noBackupFilesDir, "backup-restore/pending").isDirectory
 
         /** Must finish before Koin, Room, SettingsStore or any background consumers are initialized. */
         suspend fun applyPendingRestore(context: Context, json: Json): Boolean = withContext(Dispatchers.IO) {

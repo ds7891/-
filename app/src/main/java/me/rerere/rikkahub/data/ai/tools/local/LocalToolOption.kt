@@ -48,4 +48,16 @@ sealed class LocalToolOption {
     @Serializable
     @SerialName("http")
     data object Http : LocalToolOption()
+
+    @Serializable
+    @SerialName("ssh")
+    data object Ssh : LocalToolOption()
+
+    @Serializable
+    @SerialName("tcp")
+    data object Tcp : LocalToolOption()
+
+    @Serializable
+    @SerialName("websocket")
+    data object WebSocket : LocalToolOption()
 }

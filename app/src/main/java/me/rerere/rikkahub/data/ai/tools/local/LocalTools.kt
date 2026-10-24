@@ -34,6 +34,12 @@ class LocalTools(
 
     val mediaTool by lazy { buildMediaTool(context) }
 
+    val sshTool by lazy { buildSshTool() }
+
+    val tcpTool by lazy { buildTcpTool() }
+
+    val webSocketTool by lazy { buildWebSocketTool() }
+
     fun getTools(
         options: List<LocalToolOption>,
         httpAllowedDomains: List<String> = emptyList(),
@@ -72,6 +78,15 @@ class LocalTools(
         }
         if (options.contains(LocalToolOption.Http)) {
             tools.add(buildHttpTool(httpAllowedDomains))
+        }
+        if (options.contains(LocalToolOption.Ssh)) {
+            tools.add(sshTool)
+        }
+        if (options.contains(LocalToolOption.Tcp)) {
+            tools.add(tcpTool)
+        }
+        if (options.contains(LocalToolOption.WebSocket)) {
+            tools.add(webSocketTool)
         }
         return tools
     }

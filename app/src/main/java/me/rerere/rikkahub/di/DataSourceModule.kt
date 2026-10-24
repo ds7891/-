@@ -27,8 +27,10 @@ import me.rerere.rikkahub.data.db.fts.MessageFtsManager
 import me.rerere.rikkahub.data.ai.mcp.McpManager
 import me.rerere.rikkahub.data.network.SettingsProxySelector
 import me.rerere.rikkahub.data.network.SettingsProxyAuthenticator
-import me.rerere.rikkahub.data.files.TrashManager
 import me.rerere.rikkahub.data.network.SettingsSocks5Authenticator
+import me.rerere.rikkahub.data.files.TrashManager
+import me.rerere.rikkahub.data.plugins.PluginManager
+import me.rerere.rikkahub.data.plugins.PluginInterceptInterceptor
 import me.rerere.rikkahub.data.sync.webdav.WebDavSync
 import me.rerere.search.SearchService
 import me.rerere.rikkahub.data.sync.S3Sync
@@ -47,14 +49,19 @@ val dataSourceModule = module {
         SettingsStore(context = get(), scope = get())
     }
 
+    single {
+        val context: Context = get()
+        AppDatabaseFactory.create(context)
+    }
+
     // 「最近删除」回收站：AI 删除的文件先进这里，可恢复或彻底删除
     single {
         TrashManager(context = get())
     }
 
+    // 插件管理器：安装 / 启停 / 执行脚本 / 网络拦截
     single {
-        val context: Context = get()
-        AppDatabaseFactory.create(context)
+        PluginManager(context = get())
     }
 
     single {
@@ -193,6 +200,7 @@ val dataSourceModule = module {
                 )
             )
             .addInterceptor(AIRequestInterceptor())
+            .addInterceptor(PluginInterceptInterceptor(get()))
             .addInterceptor(HttpLoggingInterceptor().apply {
                 redactHeader("Proxy-Authorization")
                 level = HttpLoggingInterceptor.Level.HEADERS

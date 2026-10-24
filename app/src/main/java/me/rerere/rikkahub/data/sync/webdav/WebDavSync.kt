@@ -107,6 +107,7 @@ class WebDavSync(
         includeFiles = WebDavConfig.BackupItem.FILES in config.items,
         includeMedia = WebDavConfig.BackupItem.MEDIA in config.items,
         includeSubAgents = WebDavConfig.BackupItem.SUB_AGENTS in config.items,
+        includeWorkspaces = WebDavConfig.BackupItem.WORKSPACES in config.items,
     )
 
     private suspend fun restoreFromBackupFile(backupFile: File, config: WebDavConfig) = backupManager.stageRestore(
@@ -115,6 +116,7 @@ class WebDavSync(
         includeFiles = WebDavConfig.BackupItem.FILES in config.items,
         includeMedia = WebDavConfig.BackupItem.MEDIA in config.items,
         includeSubAgents = WebDavConfig.BackupItem.SUB_AGENTS in config.items,
+        includeWorkspaces = WebDavConfig.BackupItem.WORKSPACES in config.items,
     )
 
 }

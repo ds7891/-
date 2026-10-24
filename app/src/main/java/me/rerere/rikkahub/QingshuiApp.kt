@@ -36,6 +36,10 @@ import me.rerere.rikkahub.data.sync.BackupManager
 import me.rerere.rikkahub.data.sync.RestoreFailedException
 import me.rerere.rikkahub.utils.JsonInstant
 import me.rerere.rikkahub.service.WebServerService
+import me.rerere.rikkahub.service.ChatNotificationManager
+import me.rerere.rikkahub.data.ai.mcp.McpManager
+import me.rerere.rikkahub.data.builtin.BuiltinProxyManager
+import me.rerere.rikkahub.web.WebServerManager
 import me.rerere.rikkahub.utils.CrashHandler
 import me.rerere.rikkahub.utils.DatabaseUtil
 import me.rerere.rikkahub.data.repository.WorkspaceRepository
@@ -54,6 +58,12 @@ private const val TAG = "QingshuiApp"
  */
 private const val STARTUP_MAINTENANCE_DELAY_MS = 1500L
 
+/**
+ * 动态加载：非首帧必需的服务（通知订阅、内置模型代理、MCP、WebServer、维护任务）统一延后到这里。
+ * 短暂延迟是为了让首帧先渲染出来，避免和首屏抢主线程与磁盘。
+ */
+private const val DEFERRED_INIT_DELAY_MS = 600L
+
 const val CHAT_COMPLETED_NOTIFICATION_CHANNEL_ID = "chat_completed"
 const val CHAT_LIVE_UPDATE_NOTIFICATION_CHANNEL_ID = "chat_live_update"
 const val WEB_SERVER_NOTIFICATION_CHANNEL_ID = "web_server"
@@ -61,42 +71,64 @@ const val WEB_SERVER_NOTIFICATION_CHANNEL_ID = "web_server"
 class QingshuiApp : Application() {
     override fun onCreate() {
         super.onCreate()
-        // Restore files and settings before eager Koin singletons or workers can access them.
-        try {
-            val restored = runBlocking(Dispatchers.IO) {
-                BackupManager.applyPendingRestore(this@QingshuiApp, JsonInstant)
+
+        // 1) 备份恢复必须早于 Koin / Room / SettingsStore，否则恢复的数据会被旧值覆盖。
+        //    没有待恢复目录时跳过 runBlocking，避免主线程在冷启动时等待一次磁盘 IO。
+        if (BackupManager.hasPendingRestore(this)) {
+            try {
+                val restored = runBlocking(Dispatchers.IO) {
+                    BackupManager.applyPendingRestore(this@QingshuiApp, JsonInstant)
+                }
+                if (restored) {
+                    Toast.makeText(this, R.string.backup_page_restore_success, Toast.LENGTH_LONG).show()
+                }
+            } catch (e: RestoreFailedException) {
+                Log.e(TAG, "Backup restore rolled back", e)
+                Toast.makeText(this, "备份恢复失败，已保留原数据。请重新导入备份。", Toast.LENGTH_LONG).show()
             }
-            if (restored) {
-                Toast.makeText(this, R.string.backup_page_restore_success, Toast.LENGTH_LONG).show()
-            }
-        } catch (e: RestoreFailedException) {
-            Log.e(TAG, "Backup restore rolled back", e)
-            Toast.makeText(this, "备份恢复失败，已保留原数据。请重新导入备份。", Toast.LENGTH_LONG).show()
         }
+
+        // 2) 只注册模块，不主动创建单例：Room / SettingsStore 等按需懒加载，缩短冷启动。
         startKoin {
-            androidLogger()
+            if (BuildConfig.DEBUG) androidLogger()
             androidContext(this@QingshuiApp)
             workManagerFactory()
             modules(appModule, viewModelModule, dataSourceModule, repositoryModule)
         }
-        this.createNotificationChannel()
 
-        // set cursor window size to 32MB
-        DatabaseUtil.setCursorWindowSize(32 * 1024 * 1024)
-
-        // install crash handler
+        // 3) 崩溃捕获尽早安装，保证启动阶段的异常也能被捕获上报。
         CrashHandler.install(this)
 
-        // 清理临时文件、解压内置技能、同步文件、校验工作区等维护任务统一延后串行执行
-        scheduleStartupMaintenance()
+        // 4) 其余非必需工作在首帧之后动态加载，避免和首屏抢主线程 / 磁盘 IO。
+        scheduleDeferredInit()
+    }
 
-        // Start WebServer if enabled in settings
-        startWebServerIfEnabled()
+    /**
+     * 首帧之后再加载非必需服务：通知渠道、内置模型代理、MCP、WebServer、启动维护任务等。
+     * 基础对话与其核心服务在进入首页时按需初始化，这里只负责“额外的服务”。
+     */
+    private fun scheduleDeferredInit() {
+        get<AppScope>().launch {
+            delay(DEFERRED_INIT_DELAY_MS)
+            runCatching { createNotificationChannel() }
+                .onFailure { Log.e(TAG, "createNotificationChannel failed", it) }
+            DatabaseUtil.setCursorWindowSize(32 * 1024 * 1024)
 
-        // Increment launch count
-        incrementLaunchCount()
+            // 额外服务：进入首页后再初始化，避免拖慢冷启动
+            runCatching { get<ChatNotificationManager>() }
+                .onFailure { Log.e(TAG, "init ChatNotificationManager failed", it) }
+            runCatching { get<BuiltinProxyManager>() }
+                .onFailure { Log.e(TAG, "init BuiltinProxyManager failed", it) }
+            runCatching { get<McpManager>() }
+                .onFailure { Log.e(TAG, "init McpManager failed", it) }
+            runCatching { get<WebServerManager>() }
+                .onFailure { Log.e(TAG, "init WebServerManager failed", it) }
 
-        // Composer.setDiagnosticStackTraceMode(ComposeStackTraceMode.Auto)
+            // 维护任务与 WebServer 启动
+            scheduleStartupMaintenance()
+            startWebServerIfEnabled()
+            incrementLaunchCount()
+        }
     }
 
     private fun incrementLaunchCount() {

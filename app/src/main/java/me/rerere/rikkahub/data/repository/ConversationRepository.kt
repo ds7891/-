@@ -314,6 +314,34 @@ class ConversationRepository(
         messageFtsManager.indexConversation(conversation)
     }
 
+    /**
+     * 流式生成期间的草稿落库：只 upsert 最后一个消息节点。
+     *
+     * 不重写整表、不重建 FTS 索引，因此可以低成本地周期性调用；这样即使进程被杀，
+     * 已经输出的正文、推理和工具卡片也不会丢。生成正常结束后，[updateConversation] 会用
+     * 最终内容整体覆盖同一个节点。
+     */
+    suspend fun saveDraftNode(conversation: Conversation) {
+        val index = conversation.messageNodes.lastIndex
+        if (index < 0) return
+        val node = conversation.messageNodes[index]
+        database.withTransaction {
+            // 新会话可能还没落库，先补一行对话记录，保证 message_node 的外键约束成立
+            if (!conversationDAO.existsById(conversation.id.toString())) {
+                conversationDAO.insert(conversationToConversationEntity(conversation))
+            }
+            messageNodeDAO.insert(
+                MessageNodeEntity(
+                    id = node.id.toString(),
+                    conversationId = conversation.id.toString(),
+                    nodeIndex = index,
+                    messages = JsonInstant.encodeToString(node.messages),
+                    selectIndex = node.selectIndex,
+                )
+            )
+        }
+    }
+
     suspend fun deleteConversation(conversation: Conversation) {
         // 获取完整的 Conversation（包含 messageNodes）以正确清理文件
         val fullConversation = if (conversation.messageNodes.isEmpty()) {

@@ -3,6 +3,8 @@ package me.rerere.rikkahub.ui.components.ai
 import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -16,9 +18,12 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -26,6 +31,7 @@ import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.ProvideTextStyle
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.Surface
@@ -37,6 +43,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -51,9 +58,14 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
+import com.dokar.sonner.ToastType
+import me.rerere.rikkahub.ui.context.LocalToaster
+import me.rerere.ai.provider.ModelType
 import me.rerere.ai.provider.ProviderSetting
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.Voice
+import me.rerere.hugeicons.stroke.Brain02
 import me.rerere.hugeicons.stroke.Camera01
 import me.rerere.hugeicons.stroke.Codesandbox
 import me.rerere.hugeicons.stroke.ComputerTerminal01
@@ -68,16 +80,20 @@ import me.rerere.hugeicons.stroke.Settings02
 import me.rerere.hugeicons.stroke.Video01
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.Screen
+import me.rerere.rikkahub.data.ai.TaskHostingState
 import me.rerere.rikkahub.data.ai.mcp.McpManager
+import me.rerere.rikkahub.data.datastore.QingshuiFeatures
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.getCurrentChatModel
 import me.rerere.rikkahub.data.datastore.findProvider
 import me.rerere.rikkahub.data.db.entity.WorkspaceEntity
 import me.rerere.rikkahub.data.files.TrashManager
+import me.rerere.rikkahub.data.plugins.PluginManager
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.repository.WorkspaceRepository
 import me.rerere.rikkahub.ui.components.ui.ExtensionSelector
+import me.rerere.rikkahub.ui.components.ui.Select
 import me.rerere.rikkahub.ui.components.ui.permission.PermissionCamera
 import me.rerere.rikkahub.ui.components.ui.permission.PermissionManager
 import me.rerere.rikkahub.ui.components.ui.permission.rememberPermissionState
@@ -108,18 +124,31 @@ internal fun FilesPicker(
     onPickAudio: () -> Unit,
     onPickFile: () -> Unit,
     onStartVoiceMode: (() -> Unit)? = null,
+    hostingState: TaskHostingState = TaskHostingState(),
+    onStartTaskHosting: (objective: String) -> Unit = {},
+    onStopTaskHosting: () -> Unit = {},
+    onUpdateQingshuiFeatures: (QingshuiFeatures) -> Unit = {},
 ) {
     val settings = LocalSettings.current
     val provider = settings.getCurrentChatModel()?.findProvider(providers = settings.providers)
     val navController = LocalNavController.current
     val workspaceRepository: WorkspaceRepository = koinInject()
     val trashManager: TrashManager = koinInject()
+    val pluginManager: PluginManager = koinInject()
+    val toaster = LocalToaster.current
+    val scope = rememberCoroutineScope()
+    val pluginActions = remember { pluginManager.enabledPlugins().flatMap { plugin ->
+        plugin.manifest.actions.map { plugin.manifest.id to it }
+    } }
     val workspaces by workspaceRepository.listFlow().collectAsState(initial = emptyList())
     var showTrashSheet by remember { mutableStateOf(false) }
+    var showHostingSheet by remember { mutableStateOf(false) }
+    val qingshuiFeatures = settings.qingshuiFeatures
 
     Column(
         modifier = Modifier
             .fillMaxWidth()
+            .verticalScroll(rememberScrollState())
             .padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         FlowRow(
@@ -183,8 +212,37 @@ internal fun FilesPicker(
             )
         }
 
+        // 插件快捷动作：由已启用插件的 manifest.actions 声明
+        pluginActions.forEach { (pluginId, action) ->
+            ListItem(
+                leadingContent = {
+                    Icon(
+                        imageVector = HugeIcons.Package,
+                        contentDescription = null,
+                    )
+                },
+                headlineContent = { Text(action.label) },
+                supportingContent = { Text("插件动作 · $pluginId") },
+                colors = ListItemDefaults.colors(
+                    containerColor = MaterialTheme.colorScheme.surfaceContainer
+                ),
+                modifier = Modifier
+                    .clip(MaterialTheme.shapes.large)
+                    .clickable {
+                        scope.launch {
+                            val result = pluginManager.runAction(pluginId, action.id)
+                            toaster.show(
+                                message = result?.takeIf { it.isNotBlank() }
+                                    ?: "已执行：${action.label}",
+                                type = ToastType.Normal,
+                            )
+                        }
+                    },
+            )
+        }
+
         // 最近删除：AI 删除的文件先落到这里，不会立刻销毁
-        val trashCount = remember { trashManager.count() }
+        val trashCount = trashManager.count()
         ListItem(
             leadingContent = {
                 Icon(
@@ -285,6 +343,43 @@ internal fun FilesPicker(
                 },
         )
 
+        // AI 任务托管 / 防止中断入口（清水特色功能）
+        if (qingshuiFeatures.aiTaskHosting) {
+            ListItem(
+                leadingContent = {
+                    Icon(
+                        imageVector = HugeIcons.Brain02,
+                        contentDescription = stringResource(R.string.task_hosting_entry_title),
+                    )
+                },
+                headlineContent = {
+                    Text(stringResource(R.string.task_hosting_entry_title))
+                },
+                supportingContent = {
+                    Text(
+                        text = stringResource(R.string.task_hosting_entry_desc),
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                },
+                trailingContent = {
+                    if (hostingState.running) {
+                        Text(
+                            text = stringResource(R.string.task_hosting_entry_active),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                },
+                colors = ListItemDefaults.colors(
+                    containerColor = MaterialTheme.colorScheme.surfaceContainer
+                ),
+                modifier = Modifier
+                    .clip(MaterialTheme.shapes.large)
+                    .clickable { showHostingSheet = true },
+            )
+        }
+
         // Workspace CWD
         val boundWorkspace = remember(workspaces, assistant.workspaceId) {
             workspaces.find { it.id == assistant.workspaceId?.toString() }
@@ -344,6 +439,23 @@ internal fun FilesPicker(
         })
     }
 
+    // AI 任务托管派发 / 配置面板
+    if (showHostingSheet) {
+        TaskHostingSheet(
+            features = qingshuiFeatures,
+            hostingState = hostingState,
+            providers = settings.providers,
+            onUpdateFeatures = onUpdateQingshuiFeatures,
+            onStart = { objective ->
+                onStartTaskHosting(objective)
+                showHostingSheet = false
+                onDismiss()
+            },
+            onStop = onStopTaskHosting,
+            onDismiss = { showHostingSheet = false },
+        )
+    }
+
     // 最近删除 Sheet
     if (showTrashSheet) {
         TrashSheet(
@@ -352,6 +464,185 @@ internal fun FilesPicker(
         )
     }
 }
+
+/** 托管运行期间展示在输入区上方的状态横幅。 */
+@Composable
+internal fun TaskHostingBanner(
+    state: TaskHostingState,
+    onStop: () -> Unit,
+) {
+    if (!state.running) return
+    Surface(
+        color = MaterialTheme.colorScheme.secondaryContainer,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                imageVector = HugeIcons.Brain02,
+                contentDescription = null,
+                modifier = Modifier.size(20.dp),
+                tint = MaterialTheme.colorScheme.onSecondaryContainer,
+            )
+            Spacer(Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = stringResource(
+                        R.string.task_hosting_running_banner,
+                        state.round,
+                        state.maxRounds,
+                    ),
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                )
+                state.status?.let { status ->
+                    Text(
+                        text = status,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                    )
+                }
+            }
+            TextButton(onClick = onStop) {
+                Text(stringResource(R.string.task_hosting_stop))
+            }
+        }
+    }
+}
+
+/** AI 任务托管派发 / 配置面板：设置托管模型、任务目标与最大轮次，然后派发。 */
+@Composable
+private fun TaskHostingSheet(
+    features: QingshuiFeatures,
+    hostingState: TaskHostingState,
+    providers: List<ProviderSetting>,
+    onUpdateFeatures: (QingshuiFeatures) -> Unit,
+    onStart: (String) -> Unit,
+    onStop: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val sheetState = rememberBottomSheetState(
+        initialValue = SheetValue.Hidden,
+        enabledValues = setOf(SheetValue.Hidden, SheetValue.Expanded),
+    )
+    var objective by remember { mutableStateOf("") }
+    val running = hostingState.running
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .fillMaxHeight(0.85f)
+                .padding(horizontal = 16.dp)
+                .imePadding(),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text(
+                text = stringResource(R.string.task_hosting_entry_title),
+                style = MaterialTheme.typography.titleMedium,
+            )
+
+            Surface(
+                color = MaterialTheme.colorScheme.errorContainer,
+                shape = MaterialTheme.shapes.medium,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(
+                    text = stringResource(R.string.task_hosting_warning),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onErrorContainer,
+                    modifier = Modifier.padding(12.dp),
+                )
+            }
+
+            OutlinedTextField(
+                value = objective,
+                onValueChange = { objective = it },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text(stringResource(R.string.task_hosting_objective_label)) },
+                placeholder = { Text(stringResource(R.string.task_hosting_objective_hint)) },
+                minLines = 3,
+                enabled = !running,
+            )
+
+            Text(
+                text = stringResource(R.string.task_hosting_model_label),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary,
+            )
+            ModelSelector(
+                modelId = features.taskHostingModelId,
+                providers = providers,
+                type = ModelType.CHAT,
+                modifier = Modifier.fillMaxWidth(),
+                allowClear = true,
+                onSelect = { model ->
+                    // ModelSelector 的「清除」会回传一个新建的空模型，据此还原为未选择。
+                    val exists = providers.any { p -> p.models.any { it.id == model.id } }
+                    onUpdateFeatures(
+                        features.copy(taskHostingModelId = model.id.takeIf { exists })
+                    )
+                },
+            )
+
+            Text(
+                text = stringResource(R.string.task_hosting_rounds_label),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary,
+            )
+            Select(
+                options = HOSTING_ROUND_OPTIONS,
+                selectedOption = features.taskHostingMaxRounds,
+                onOptionSelected = { onUpdateFeatures(features.copy(taskHostingMaxRounds = it)) },
+                optionToString = {
+                    stringResource(R.string.qingshui_features_task_hosting_rounds_value, it)
+                },
+                modifier = Modifier.fillMaxWidth(),
+            )
+
+            hostingState.status?.let { status ->
+                Text(
+                    text = status,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            if (running) {
+                Button(
+                    onClick = { onStop() },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error,
+                        contentColor = MaterialTheme.colorScheme.onError,
+                    ),
+                ) {
+                    Text(stringResource(R.string.task_hosting_stop))
+                }
+            } else {
+                Button(
+                    onClick = { onStart(objective) },
+                    enabled = objective.isNotBlank(),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(stringResource(R.string.task_hosting_start))
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+        }
+    }
+}
+
+/** AI 任务托管可选的最大轮次。 */
+private val HOSTING_ROUND_OPTIONS = listOf(5, 10, 20, 30, 50)
 
 @Composable
 private fun WorkspacePickerListItem(

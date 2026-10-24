@@ -30,11 +30,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.dokar.sonner.ToastType
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.Delete01
+import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.files.TrashEntry
 import me.rerere.rikkahub.data.files.TrashManager
 import me.rerere.rikkahub.ui.context.LocalToaster
@@ -71,7 +73,7 @@ internal fun TrashSheet(
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    text = "最近删除",
+                    text = stringResource(R.string.qingshui_trash_title),
                     style = MaterialTheme.typography.titleLarge,
                     modifier = Modifier.weight(1f),
                 )

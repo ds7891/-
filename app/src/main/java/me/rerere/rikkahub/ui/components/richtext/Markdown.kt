@@ -82,10 +82,12 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.util.fastForEach
 import androidx.core.net.toUri
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.mapLatest
+import kotlinx.coroutines.flow.sample
 import kotlinx.coroutines.launch
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
@@ -109,6 +111,7 @@ import org.intellij.markdown.flavours.gfm.GFMFlavourDescriptor
 import org.intellij.markdown.flavours.gfm.GFMTokenTypes
 import org.intellij.markdown.parser.MarkdownParser
 import kotlin.time.Clock
+import kotlin.time.Duration.Companion.milliseconds
 
 private val flavour by lazy {
     GFMFlavourDescriptor(
@@ -230,6 +233,10 @@ private fun parseMarkdown(content: String): MarkdownParseResult {
     return MarkdownParseResult(preprocessed, astTree, astTree.containsHtml())
 }
 
+/** 流式输出时 Markdown 全量重解析的最小间隔。 */
+private val MARKDOWN_REPARSE_INTERVAL_MS = 120.milliseconds
+
+@OptIn(FlowPreview::class)
 @Composable
 fun MarkdownBlock(
     content: String,
@@ -241,10 +248,13 @@ fun MarkdownBlock(
 
     // 监听内容变化，重新解析AST树
     // 这里在后台线程解析AST树, 防止频繁更新的时候掉帧
+    // 流式输出时 token 到达极快，若每个 token 都全量重解析 AST，成本随文本长度线性增长，
+    // 会拖慢整体输出速度并造成掉帧；这里按固定间隔采样，最多约每 120ms 重解析一次。
     val updatedContent by rememberUpdatedState(content)
     LaunchedEffect(Unit) {
         snapshotFlow { updatedContent }
             .distinctUntilChanged()
+            .sample(MARKDOWN_REPARSE_INTERVAL_MS)
             .mapLatest { parseMarkdown(it) }
             .catch { exception -> exception.printStackTrace() }
             .flowOn(Dispatchers.Default)

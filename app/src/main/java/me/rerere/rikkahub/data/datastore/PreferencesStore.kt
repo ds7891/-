@@ -732,6 +732,13 @@ enum class BackgroundEffectType {
  * - [preventPromptLeak]：防止提示词泄露。仅对对话请求启用上游证书固定，阻断中间人 / 代理
  *   截获并读取提示词；内置模型用固定指纹，自定义供应商用首次信任（TOFU）指纹。开启后
  *   非 HTTPS 的对话请求会被直接拒绝。
+ * - [aiTaskHosting]：AI 任务托管。开启后，主页输入框「+」面板会出现「AI 任务托管」入口：
+ *   设定托管模型与任务目标后派发，由托管模型代替用户持续生成并自动发送下一条消息，
+ *   直到 AI 判定任务完成、用户手动停止或达到轮次上限。仅供用户不在场时使用，输出内容不保证。
+ * - [taskHostingAntiInterrupt]：AI 防中断。仅托管运行期间生效：检测到生成被中断（输出未完成，
+ *   且不是用户手动停止）时自动续写，直到输出完整。
+ * - [taskHostingModelId]：托管模型；为空时回落到当前对话模型。
+ * - [taskHostingMaxRounds]：托管最大轮次（安全阀，防止不收敛时无限循环）。
  * - [autoApproveAll]：默认申请全部同意。开启后 AI 向用户申请的一切工具与功能都自动同意，
  *   不再弹窗：包括本机工具（文件系统、日历等）的执行确认，以及子智能体的权限申请。
  */
@@ -743,8 +750,40 @@ data class QingshuiFeatures(
     val toolProtocol: QingshuiToolProtocol = QingshuiToolProtocol.AUTO,
     val assistantPrefill: Boolean = true,
     val preventPromptLeak: Boolean = false,
+    /** 提示词洗白：发送前把用户输入里的高触发词换成同义中性名词 */
+    val promptWhitewash: Boolean = false,
+    val whitewashLevel: WhitewashLevel = WhitewashLevel.STANDARD,
+    /** 自定义词条，每行一条 `源词=目标词`，`#` 开头为注释 */
+    val whitewashCustomRules: String = "",
+    /** 模型拒绝时自动改写并重发，直到它肯答或次数用完 */
+    val autoRetryOnRefusal: Boolean = false,
+    /** 拒绝重试的最大轮次（1~5） */
+    val maxRefusalRetries: Int = 3,
     val autoApproveAll: Boolean = false,
+    val aiTaskHosting: Boolean = false,
+    val taskHostingAntiInterrupt: Boolean = false,
+    val taskHostingModelId: Uuid? = null,
+    val taskHostingMaxRounds: Int = 20,
 )
+
+/**
+ * 提示词洗白强度。
+ *
+ * - [LIGHT]：只做等义换词，句子结构完全不动；
+ * - [STANDARD]：换词 + 祈使句名词化（推荐）；
+ * - [STRONG]：再叠加软化与标点规整，适合上游审核特别严的端点。
+ */
+@Serializable
+enum class WhitewashLevel {
+    @SerialName("light")
+    LIGHT,
+
+    @SerialName("standard")
+    STANDARD,
+
+    @SerialName("strong")
+    STRONG,
+}
 
 /** 工具调用协议：自动 / 原生 tool_calls / 本地 XML 协议 */
 @Serializable
@@ -813,6 +852,7 @@ data class WebDavConfig(
         BackupItem.DATABASE,
         BackupItem.FILES,
         BackupItem.SUB_AGENTS,
+        BackupItem.WORKSPACES,
     ),
 ) {
     @Serializable
@@ -821,6 +861,7 @@ data class WebDavConfig(
         FILES,
         MEDIA,
         SUB_AGENTS,
+        WORKSPACES,
     }
 }
 

@@ -75,9 +75,9 @@ val appModule = module {
         WorkspaceTerminalSessionManager(get(), get())
     }
 
-    // 生成通知与业务解耦：ChatService 只发事件，通知由这里消费；
-    // createdAtStart 保证进程启动即订阅，否则后台生成的事件会因无订阅者而丢失
-    single(createdAtStart = true) {
+    // 生成通知与业务解耦：ChatService 只发事件，通知由这里消费。
+    // 启动时不再 createdAtStart，改为首帧后由 QingshuiApp 动态初始化，避免拖慢冷启动。
+    single {
         ChatNotificationManager(
             context = get(),
             appScope = get(),
@@ -113,6 +113,7 @@ val appModule = module {
             workspaceRepository = get(),
             subAgentRunner = get(),
             subAgentLiveStore = get(),
+            pluginManager = get(),
         )
     }
 
@@ -171,8 +172,8 @@ val appModule = module {
         BuiltinProxyServer(repository = get(), client = get(), json = get(), settingsStore = get())
     }
 
-    // 进程启动即订阅开关，保证「内置模型」开启后本地代理自动运行
-    single(createdAtStart = true) {
+    // 进程启动后由 QingshuiApp 在首帧后动态初始化，保证「内置模型」开启时本地代理自动运行。
+    single {
         BuiltinProxyManager(repository = get(), server = get(), appScope = get())
     }
 }
