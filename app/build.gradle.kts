@@ -1,6 +1,7 @@
 import com.android.build.api.dsl.Packaging
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
+import java.io.File
 import java.io.FileInputStream
 import java.util.Properties
 
@@ -15,14 +16,37 @@ plugins {
 }
 
 /**
- * 本地签名配置来源。CI（GitHub Actions）上不存在 local.properties，
- * 改由 QINGSHUI_* 环境变量提供，两者优先级：环境变量 > local.properties。
+ * 正式签名配置，三个来源按优先级取第一个「填全了」的：
+ *
+ * 1. `QINGSHUI_*` 环境变量 —— CI 用 GitHub Secrets 注入，最规范；
+ * 2. `local.properties` —— 本地 Android Studio 惯用做法，该文件已被 .gitignore 忽略；
+ * 3. `keystore/keystore.properties` —— 随仓库走的内置方式，配合同目录的 jks 文件，
+ *    不用配任何 Secrets 就能签出正式包（代价见 keystore/README.md）。
  */
-val localProperties = Properties().apply {
-    val file = rootProject.file("local.properties")
-    if (file.exists()) {
-        FileInputStream(file).use { load(it) }
+fun loadProps(name: String): Properties = Properties().apply {
+    val f = rootProject.file(name)
+    if (f.exists()) {
+        FileInputStream(f).use { load(it) }
     }
+}
+
+val localProperties = loadProps("local.properties")
+val bundledKeystoreProperties = loadProps("keystore/keystore.properties")
+
+/** 空串与未替换的占位符都算「没配」，避免误把模板里的尖括号当口令。 */
+fun configured(v: String?): String? =
+    v?.trim()?.takeIf { it.isNotEmpty() && !it.startsWith("<") }
+
+/** 按 环境变量 > local.properties > keystore/keystore.properties 逐级取值。 */
+fun signingValue(env: String, prop: String): String? =
+    configured(System.getenv(env))
+        ?: configured(localProperties.getProperty(prop))
+        ?: configured(bundledKeystoreProperties.getProperty(prop))
+
+/** storeFile 允许写相对 keystore/ 的文件名，也允许绝对路径。 */
+fun resolveStoreFile(raw: String): File {
+    val f = File(raw)
+    return if (f.isAbsolute) f else rootProject.file("keystore/$raw")
 }
 
 android {
@@ -61,24 +85,34 @@ android {
 
     signingConfigs {
         create("release") {
-            // 优先级：环境变量（CI / 命令行） > local.properties（本地）
-            fun read(env: String, prop: String): String? =
-                System.getenv(env)?.takeIf { it.isNotBlank() }
-                    ?: localProperties.getProperty(prop)?.takeIf { it.isNotBlank() }
+            val storeFilePath = signingValue("QINGSHUI_STORE_FILE", "storeFile")
+            val storePasswordValue = signingValue("QINGSHUI_STORE_PASSWORD", "storePassword")
+            val keyAliasValue = signingValue("QINGSHUI_KEY_ALIAS", "keyAlias")
+            val keyPasswordValue = signingValue("QINGSHUI_KEY_PASSWORD", "keyPassword")
 
-            val storeFilePath = read("QINGSHUI_STORE_FILE", "storeFile")
-            val storePasswordValue = read("QINGSHUI_STORE_PASSWORD", "storePassword")
-            val keyAliasValue = read("QINGSHUI_KEY_ALIAS", "keyAlias")
-            val keyPasswordValue = read("QINGSHUI_KEY_PASSWORD", "keyPassword")
+            val missing = buildList {
+                if (storeFilePath == null) add("storeFile")
+                if (storePasswordValue == null) add("storePassword")
+                if (keyAliasValue == null) add("keyAlias")
+                if (keyPasswordValue == null) add("keyPassword")
+            }
 
-            if (storeFilePath != null && storePasswordValue != null &&
-                keyAliasValue != null && keyPasswordValue != null
-            ) {
-                // rootProject.file() 同时支持绝对路径与相对仓库根目录的路径
-                storeFile = rootProject.file(storeFilePath)
+            if (missing.isEmpty()) {
+                storeFile = resolveStoreFile(storeFilePath!!)
                 storePassword = storePasswordValue
                 keyAlias = keyAliasValue
                 keyPassword = keyPasswordValue
+                // 只打印文件名与 alias，口令不进日志
+                logger.lifecycle(
+                    "清水正式签名已启用：storeFile=${storeFile?.name}  keyAlias=$keyAlias  " +
+                        "文件存在=${storeFile?.exists()}"
+                )
+            } else {
+                logger.warn(
+                    "清水正式签名不完整，缺 [$missing]。" +
+                        "把 keystore/keystore.properties 四项填全即可（不需要配 Secrets），" +
+                        "也可用 QINGSHUI_* 环境变量或 local.properties 覆盖。"
+                )
             }
         }
     }

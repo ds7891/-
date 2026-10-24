@@ -60,35 +60,112 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       # ---------- 正式签名 ----------
-      # keystore 是二进制，Secrets 只能存文本，所以存 base64，这里还原成文件。
-      # 落到 runner.temp 而不是工作区：既不会被后续步骤误删，也不会被打进 artifact。
-      - name: Decode keystore
+      # 两条路任选，不用都配：
+      #   A. GitHub Secrets（KEYSTORE_BASE64 等四项）—— keystore 不进仓库
+      #   B. 仓库内置 keystore/ 目录 —— 零 Secrets 配置，只要把口令填进 keystore/keystore.properties
+      # 两条路都没有时直接拦下，并告诉你要填哪一格，不浪费编译时间。
+      - name: Resolve signing keystore
         if: inputs.build_type != 'debug'
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
-          set -euo pipefail
-          if [ -z "${KEYSTORE_BASE64:-}" ]; then
-            echo "::error::缺少 secret KEYSTORE_BASE64。仓库 Settings → Secrets and variables → Actions 里新建，值填 keystore 的 base64（单行）。"
+          set -uo pipefail
+          : "${RUNNER_TEMP:?runner 未提供 RUNNER_TEMP}"
+          mkdir -p "$RUNNER_TEMP"
+
+          # 只判断是否存在，绝不 echo 口令内容
+          filled() { [ -n "${1:-}" ]; }
+          check_jks() {  # $1=文件  $2=来源标签
+            local size magic
+            size=$(stat -c%s "$1" 2>/dev/null || echo 0)
+            echo "  文件：$1（$size 字节）"
+            [ "$size" -gt 0 ] || { echo "::error::$2 解码/读取后为空"; return 1; }
+            magic=$(od -An -tx1 -N4 "$1" | tr -d ' \n')
+            if [ "$magic" = "feedfeed" ]; then
+              echo "  格式：JKS 确认（magic feedfeed）"
+            elif [ "${magic:0:2}" = "30" ]; then
+              echo "  格式：PKCS12 确认"
+            else
+              echo "::error::$2 不是合法 keystore，头部字节=$magic（多半是 base64 粘错内容或混入了引号）"
+              return 1
+            fi
+          }
+
+          # 按 JKS 二进制结构直接读第一个条目的 alias（alias 前有 2 字节大端长度），
+          # 比扫描可打印字符可靠：不依赖 alias 出现在第几行、周围有没有别的字符串。
+          # 解析不出来（比如 PKCS12）就返回空，调用方跳过预检即可。
+          jks_alias() {
+            python3 -c 'import struct,sys;d=open(sys.argv[1],"rb").read();ok=d[:4]==b"\xfe\xed\xfe\xed" and len(d)>20;a=struct.unpack(">H",d[16:18])[0] if ok else 0;a=a if a>0 and 18+a<=len(d) else 0;sys.stdout.write(d[18:18+a].decode("utf-8","replace") if a else "")' "$1" 2>/dev/null || true
+          }
+
+          check_alias() {  # $1=keystore 文件  $2=填写的 alias
+            local real
+            real=$(jks_alias "$1")
+            if [ -z "$real" ]; then
+              echo "  alias 预检跳过（非 JKS 或结构解析失败），口令/alias 有误会在签名步骤报出"
+            elif [ "$real" = "$2" ]; then
+              echo "  keyAlias 与文件内容匹配：$real"
+            else
+              echo "::error::keyAlias 填错了：你填的是 '$2'，文件里的实际 alias 是 '$real'"
+              return 1
+            fi
+          }
+
+
+          if filled "$KEYSTORE_BASE64"; then
+            echo "=== 签名来源：A · GitHub Secrets ==="
+            miss=""
+            filled "$KEYSTORE_PASSWORD" || miss="$miss KEYSTORE_PASSWORD"
+            filled "$KEY_ALIAS" || miss="$miss KEY_ALIAS"
+            filled "$KEY_PASSWORD" || miss="$miss KEY_PASSWORD"
+            if [ -n "$miss" ]; then
+              echo "::error::已提供 KEYSTORE_BASE64，但还缺:$miss"
+              echo "  走 Secrets 方式四项都得有；嫌麻烦可以改用仓库内置方式（见 keystore/README.md）"
+              exit 1
+            fi
+            printf '%s' "$KEYSTORE_BASE64" | base64 -di > "$RUNNER_TEMP/release.keystore"
+            check_jks "$RUNNER_TEMP/release.keystore" "KEYSTORE_BASE64" || exit 1
+            check_alias "$RUNNER_TEMP/release.keystore" "$KEY_ALIAS" || exit 1
+            # 只把路径写进 GITHUB_ENV（口令仍由后续步骤的 env 注入，不落盘）
+            echo "QINGSHUI_STORE_FILE=$RUNNER_TEMP/release.keystore" >> "$GITHUB_ENV"
+
+          elif [ -f keystore/keystore.properties ]; then
+            echo "=== 签名来源：B · 仓库内置 keystore/ ==="
+            val() { grep -E "^$1=" keystore/keystore.properties | head -1 | cut -d= -f2- \
+                    | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'; }
+            SP=$(val storePassword); KP=$(val keyPassword)
+            AL=$(val keyAlias);      SF=$(val storeFile)
+            [ "$SF" = "" ] && SF="wesdtf698.jks"
+            if [ -z "$SP" ] || [ -z "$KP" ]; then
+              echo "::error::keystore/keystore.properties 里 storePassword / keyPassword 还没填"
+              echo "  打开 keystore/keystore.properties，把这两行等号后面补上你的口令，保存后推送重跑"
+              exit 1
+            fi
+            if [ -z "$AL" ]; then
+              echo "::error::keystore/keystore.properties 里 keyAlias 没填（应为 wesdtf698）"
+              exit 1
+            fi
+            [ -f "keystore/$SF" ] || { echo "::error::找不到 keystore/$SF"; exit 1; }
+            check_jks "keystore/$SF" "仓库内置 keystore" || exit 1
+            check_alias "keystore/$SF" "$AL" || exit 1
+            echo "  口令已检测到（内容不打印）"
+
+          else
+            echo "::error::没有可用签名：既没有 secret KEYSTORE_BASE64，仓库里也没有 keystore/keystore.properties"
+            echo "  两条路任选一条："
+            echo "  A) 仓库 Settings → Secrets and variables → Actions → Repository secrets 建四项："
+            echo "     KEYSTORE_BASE64 / KEYSTORE_PASSWORD / KEY_ALIAS / KEY_PASSWORD（名称区分大小写）"
+            echo "  B) 把 keystore/keystore.properties 里的 storePassword、keyPassword 两格填上口令"
+            echo ""
+            echo "  只想先验证代码能否编译：Run workflow 时把 build_type 选成 debug（不碰签名）"
             exit 1
           fi
-          printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
-          test -s "$RUNNER_TEMP/release.keystore"
-          echo "keystore 就绪：$(stat -c%s "$RUNNER_TEMP/release.keystore") 字节"
-          echo "QINGSHUI_STORE_FILE=$RUNNER_TEMP/release.keystore" >> "$GITHUB_ENV"
+          echo "keystore 就绪"
 
-      - name: Check signing inputs
-        if: inputs.build_type != 'debug'
-        env:
-          STORE_PW: ${{ secrets.KEYSTORE_PASSWORD }}
-          KEY_PW: ${{ secrets.KEY_PASSWORD }}
-          ALIAS: ${{ secrets.KEY_ALIAS }}
-        run: |
-          set -euo pipefail
-          [ -n "${STORE_PW:-}" ] || { echo "::error::缺少 secret KEYSTORE_PASSWORD"; exit 1; }
-          [ -n "${KEY_PW:-}" ]   || { echo "::error::缺少 secret KEY_PASSWORD"; exit 1; }
-          [ -n "${ALIAS:-}" ]    || { echo "::error::缺少 secret KEY_ALIAS"; exit 1; }
-          echo "alias = $ALIAS"
+
 
       # --no-configuration-cache 必须加：签名配置在 Gradle 配置阶段求值，而 setup-gradle
       # 会缓存 ~/.gradle（含 configuration cache）。不加这个参数，一旦第一次构建时
