@@ -175,18 +175,34 @@ class WorkspaceManager(
     fun moveFile(root: String, source: String, target: String, overwrite: Boolean = false): WorkspaceFileEntry =
         fileSystem.move(filesDir(root), source, target, overwrite)
 
-    fun glob(root: String, pattern: String, path: String = ""): List<WorkspaceFileEntry> =
-        fileSystem.glob(filesDir(root), pattern, path)
+    fun glob(
+        root: String,
+        pattern: String,
+        path: String = "",
+        area: WorkspaceStorageArea = WorkspaceStorageArea.FILES,
+    ): List<WorkspaceFileEntry> =
+        fileSystem.glob(areaDir(root, area), pattern, path)
+
+    /** 文件名递归搜索，供工作区文件页的搜索框使用。 */
+    fun searchFiles(
+        root: String,
+        query: String,
+        path: String = "",
+        area: WorkspaceStorageArea = WorkspaceStorageArea.FILES,
+        includeDirectories: Boolean = true,
+    ): WorkspaceFileSearchResult =
+        fileSystem.search(areaDir(root, area), query, path, includeDirectories)
 
     fun grep(
         root: String,
         query: String,
         path: String = "",
+        area: WorkspaceStorageArea = WorkspaceStorageArea.FILES,
         regex: Boolean = false,
         ignoreCase: Boolean = true,
         includeGlob: String? = null,
     ): List<WorkspaceSearchMatch> =
-        fileSystem.grep(filesDir(root), query, path, regex, ignoreCase, includeGlob)
+        fileSystem.grep(areaDir(root, area), query, path, regex, ignoreCase, includeGlob)
 
     fun executeCommand(
         root: String,

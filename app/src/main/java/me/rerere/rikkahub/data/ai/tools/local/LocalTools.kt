@@ -40,6 +40,8 @@ class LocalTools(
 
     val webSocketTool by lazy { buildWebSocketTool() }
 
+    val qqBotTool by lazy { buildQQBotTool(settingsStore) }
+
     fun getTools(
         options: List<LocalToolOption>,
         httpAllowedDomains: List<String> = emptyList(),
@@ -87,6 +89,9 @@ class LocalTools(
         }
         if (options.contains(LocalToolOption.WebSocket)) {
             tools.add(webSocketTool)
+        }
+        if (options.contains(LocalToolOption.QQBot)) {
+            tools.add(qqBotTool)
         }
         return tools
     }

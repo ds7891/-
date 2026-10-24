@@ -8,6 +8,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -23,7 +25,9 @@ import me.rerere.rikkahub.data.repository.WorkspaceRepository
 import me.rerere.workspace.RootfsInstallProgress
 import me.rerere.workspace.RootfsInstallStage
 import me.rerere.workspace.WorkspaceFileEntry
+import me.rerere.workspace.WorkspaceFileSearchResult
 import me.rerere.workspace.WorkspaceCommandResult
+import me.rerere.workspace.WorkspaceSearchMatch
 import me.rerere.workspace.WorkspaceStorageArea
 
 class WorkspaceDetailVM(
@@ -33,6 +37,9 @@ class WorkspaceDetailVM(
 ) : ViewModel() {
     private val _state = MutableStateFlow(WorkspaceDetailState())
     val state = _state.asStateFlow()
+
+    /** 当前挂起的搜索任务，用于防抖与取消过期扫描。 */
+    private var searchJob: Job? = null
 
     private var pendingExport: Pair<WorkspaceStorageArea, List<WorkspaceFileEntry>>? = null
 
@@ -122,35 +129,156 @@ class WorkspaceDetailVM(
     }
 
     fun selectArea(area: WorkspaceStorageArea) {
-        _state.update {
-            it.copy(
-                area = area,
-                path = "",
-                entries = emptyList(),
-                error = null,
-            )
-        }
+        cancelSearch()
+        _state.update { it.copy(area = area, path = "").clearedForNavigation() }
         refresh()
     }
 
     fun open(entry: WorkspaceFileEntry) {
         if (!entry.isDirectory) return
-        _state.update { it.copy(path = entry.path, entries = emptyList(), error = null) }
+        cancelSearch()
+        _state.update { it.copy(path = entry.path).clearedForNavigation() }
         refresh()
     }
 
     fun goUp() {
         val path = state.value.path
         if (path.isBlank()) return
+        cancelSearch()
         _state.update {
-            it.copy(
-                path = path.substringBeforeLast('/', missingDelimiterValue = ""),
-                entries = emptyList(),
-                error = null,
-            )
+            it.copy(path = path.substringBeforeLast('/', missingDelimiterValue = "")).clearedForNavigation()
         }
         refresh()
     }
+
+    // ------------------------------------------------------------------
+    // 搜索
+    // ------------------------------------------------------------------
+
+    /** 打字触发：等 [SEARCH_DEBOUNCE_MS] 再扫盘，避免每个字符都遍历一次目录树。 */
+    fun updateSearchQuery(query: String) {
+        _state.update { it.copy(searchQuery = query) }
+        if (query.isBlank()) {
+            clearSearch()
+            return
+        }
+        searchJob?.cancel()
+        searchJob = viewModelScope.launch {
+            delay(SEARCH_DEBOUNCE_MS)
+            runSearch()
+        }
+    }
+
+    /** 回车 / 点重试：不等防抖，立刻搜。 */
+    fun submitSearch() {
+        searchJob?.cancel()
+        runSearch()
+    }
+
+    fun setSearchMode(mode: WorkspaceSearchMode) {
+        if (_state.value.searchMode == mode) return
+        _state.update { it.copy(searchMode = mode) }
+        if (_state.value.searchQuery.isNotBlank()) submitSearch()
+    }
+
+    fun setSearchWholeArea(enabled: Boolean) {
+        if (_state.value.searchWholeArea == enabled) return
+        _state.update { it.copy(searchWholeArea = enabled) }
+        if (_state.value.searchQuery.isNotBlank()) submitSearch()
+    }
+
+    fun clearSearch() {
+        cancelSearch()
+        _state.update {
+            it.copy(
+                searchQuery = "",
+                searchResults = emptyList(),
+                searchMatches = emptyList(),
+                searching = false,
+                searchTruncated = false,
+                searchError = null,
+            )
+        }
+    }
+
+    private fun cancelSearch() {
+        searchJob?.cancel()
+        searchJob = null
+    }
+
+    private fun runSearch() {
+        cancelSearch()
+        val snapshot = _state.value
+        val query = snapshot.searchQuery.trim()
+        if (query.isEmpty()) {
+            _state.update {
+                it.copy(
+                    searchResults = emptyList(),
+                    searchMatches = emptyList(),
+                    searching = false,
+                    searchTruncated = false,
+                    searchError = null,
+                )
+            }
+            return
+        }
+        val area = snapshot.area
+        val mode = snapshot.searchMode
+        // 范围：整个区域从根开始；只搜当前目录则限定在 path 之下
+        val scopePath = if (snapshot.searchWholeArea) "" else snapshot.path
+        _state.update { it.copy(searching = true, searchError = null) }
+        searchJob = viewModelScope.launch {
+            val result = try {
+                when (mode) {
+                    WorkspaceSearchMode.NAME ->
+                        repository.searchFiles(id, area, scopePath, query) to emptyList<WorkspaceSearchMatch>()
+
+                    WorkspaceSearchMode.CONTENT ->
+                        WorkspaceFileSearchResult() to repository.grepFiles(id, area, scopePath, query)
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                _state.update {
+                    it.copy(
+                        searching = false,
+                        searchError = error.message ?: "搜索失败",
+                    )
+                }
+                return@launch
+            }
+            val (fileResult, matches) = result
+            // 结果回来时如果区域 / 目录 / 关键词已经变了，说明这是一次过期的扫描，直接丢弃，
+            // 否则慢的那次会把新目录的结果覆盖掉。
+            val current = _state.value
+            if (current.area != area || current.path != snapshot.path ||
+                current.searchQuery.trim() != query || current.searchMode != mode
+            ) {
+                return@launch
+            }
+            _state.update {
+                it.copy(
+                    searching = false,
+                    searchResults = fileResult.entries,
+                    searchMatches = matches,
+                    searchTruncated = fileResult.truncated,
+                    searchError = null,
+                )
+            }
+        }
+    }
+
+    /** 换目录 / 换区域后带走的干净状态：清掉列表与搜索痕迹。 */
+    private fun WorkspaceDetailState.clearedForNavigation(): WorkspaceDetailState = copy(
+        entries = emptyList(),
+        error = null,
+        searchQuery = "",
+        searchResults = emptyList(),
+        searchMatches = emptyList(),
+        searching = false,
+        searchTruncated = false,
+        searchError = null,
+    )
 
     fun refresh() {
         viewModelScope.launch {
@@ -353,6 +481,14 @@ class WorkspaceDetailVM(
             _state.update { it.copy(workspace = workspace) }
         }
     }
+
+    private companion object {
+        /**
+         * 打字停止多久后才真正扫盘。太短会每敲一个字遍历一次目录树（Linux 区几万文件会明显发热），
+         * 太长手感发黏。280ms 是两者之间比较舒服的位置。
+         */
+        const val SEARCH_DEBOUNCE_MS = 280L
+    }
 }
 
 data class WorkspaceDetailState(
@@ -366,7 +502,27 @@ data class WorkspaceDetailState(
     val exportCompleted: Int = 0,
     val exportTotal: Int = 0,
     val exportResult: String? = null,
-)
+    // ---- 搜索 ----
+    val searchQuery: String = "",
+    val searchMode: WorkspaceSearchMode = WorkspaceSearchMode.NAME,
+    /** true = 搜整个区域（含所有子目录）；false = 只搜当前目录下面 */
+    val searchWholeArea: Boolean = true,
+    val searchResults: List<WorkspaceFileEntry> = emptyList(),
+    val searchMatches: List<WorkspaceSearchMatch> = emptyList(),
+    val searching: Boolean = false,
+    /** 命中过多或遍历到上限，结果只是前一部分 */
+    val searchTruncated: Boolean = false,
+    val searchError: String? = null,
+) {
+    /** 搜索框里有内容就算处于搜索态，列表改渲染结果而不是目录内容。 */
+    val searchActive: Boolean get() = searchQuery.isNotBlank()
+}
+
+/** 搜索目标：文件名，或文件内容。 */
+enum class WorkspaceSearchMode {
+    NAME,
+    CONTENT,
+}
 
 data class WorkspaceTerminalState(
     val input: String = "",

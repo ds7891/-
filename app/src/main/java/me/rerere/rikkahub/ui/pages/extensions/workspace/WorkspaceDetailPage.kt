@@ -7,7 +7,10 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -28,6 +31,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -41,6 +45,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -58,6 +63,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
@@ -76,6 +86,8 @@ import me.rerere.hugeicons.stroke.FileImport
 import me.rerere.hugeicons.stroke.Folder01
 import me.rerere.hugeicons.stroke.MoreVertical
 import me.rerere.hugeicons.stroke.Refresh01
+import me.rerere.hugeicons.stroke.Search01
+import me.rerere.hugeicons.stroke.SearchRemove
 import me.rerere.hugeicons.stroke.Settings03
 import me.rerere.hugeicons.stroke.Share08
 import me.rerere.rikkahub.Screen
@@ -94,6 +106,7 @@ import me.rerere.rikkahub.utils.plus
 import me.rerere.workspace.RootfsInstallProgress
 import me.rerere.workspace.RootfsInstallStage
 import me.rerere.workspace.WorkspaceFileEntry
+import me.rerere.workspace.WorkspaceSearchMatch
 import me.rerere.workspace.WorkspaceShellStatus
 import me.rerere.workspace.WorkspaceStorageArea
 import org.koin.androidx.compose.koinViewModel
@@ -217,6 +230,11 @@ fun WorkspaceDetailPage(id: String) {
                     contentPadding = PaddingValues(),
                     onSelectArea = vm::selectArea,
                     onGoUp = vm::goUp,
+                    onSearchQueryChange = vm::updateSearchQuery,
+                    onSubmitSearch = vm::submitSearch,
+                    onClearSearch = vm::clearSearch,
+                    onSearchModeChange = vm::setSearchMode,
+                    onSearchWholeAreaChange = vm::setSearchWholeArea,
                     onResolveImage = { entry, area -> vm.resolveImageFile(entry, area) },
                     onOpen = { entry ->
                         when {
@@ -604,6 +622,11 @@ private fun WorkspaceFilesPage(
     contentPadding: PaddingValues,
     onSelectArea: (WorkspaceStorageArea) -> Unit,
     onGoUp: () -> Unit,
+    onSearchQueryChange: (String) -> Unit,
+    onSubmitSearch: () -> Unit,
+    onClearSearch: () -> Unit,
+    onSearchModeChange: (WorkspaceSearchMode) -> Unit,
+    onSearchWholeAreaChange: (Boolean) -> Unit,
     onResolveImage: suspend (WorkspaceFileEntry, WorkspaceStorageArea) -> File?,
     onOpen: (WorkspaceFileEntry) -> Unit,
     onDelete: (WorkspaceFileEntry) -> Unit,
@@ -642,7 +665,22 @@ private fun WorkspaceFilesPage(
             )
         }
 
-        if (selecting || state.exporting) item {
+        item {
+            WorkspaceSearchBar(
+                query = state.searchQuery,
+                mode = state.searchMode,
+                wholeArea = state.searchWholeArea,
+                searching = state.searching,
+                onQueryChange = onSearchQueryChange,
+                onSubmit = onSubmitSearch,
+                onClear = onClearSearch,
+                onModeChange = onSearchModeChange,
+                onWholeAreaChange = onSearchWholeAreaChange,
+            )
+        }
+
+        // 搜索态下不提供多选：勾中的是跨目录的散文件，批量导出时容易误判范围
+        if (!state.searchActive && (selecting || state.exporting)) item {
             Column {
                 if (selecting) Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -676,32 +714,329 @@ private fun WorkspaceFilesPage(
             }
         }
 
-        if (!state.loading && state.entries.isEmpty() && state.error == null) {
+        if (state.searchActive) {
+            state.searchError?.let { error ->
+                item { ErrorCard(error) }
+            }
             item {
-                EmptyDirectoryState()
+                WorkspaceSearchSummary(
+                    searching = state.searching,
+                    mode = state.searchMode,
+                    wholeArea = state.searchWholeArea,
+                    path = state.path,
+                    nameCount = state.searchResults.size,
+                    matchCount = state.searchMatches.size,
+                    truncated = state.searchTruncated,
+                )
+            }
+            if (!state.searching && state.searchError == null &&
+                state.searchResults.isEmpty() && state.searchMatches.isEmpty()
+            ) {
+                item { EmptySearchResult() }
+            }
+            when (state.searchMode) {
+                // 文件名结果直接复用列表卡片：path 已经是相对区域根的路径，
+                // 点目录能进、点文件能预览，跟正常浏览完全一致
+                WorkspaceSearchMode.NAME -> items(
+                    state.searchResults,
+                    key = { "search:${state.area.name}:${it.path}" },
+                ) { entry ->
+                    WorkspaceFileCard(
+                        entry = entry,
+                        area = state.area,
+                        onResolveImage = { onResolveImage(entry, state.area) },
+                        selecting = false,
+                        selected = false,
+                        onToggleSelection = {},
+                        onLongClick = {},
+                        onOpen = { onOpen(entry) },
+                        onDelete = { onDelete(entry) },
+                        onExport = { onExport(entry) },
+                        onShare = { onShare(entry) },
+                    )
+                }
+
+                WorkspaceSearchMode.CONTENT -> items(
+                    state.searchMatches,
+                    key = { "grep:${state.area.name}:${it.path}:${it.line}:${it.text.hashCode()}" },
+                ) { match ->
+                    WorkspaceSearchMatchRow(
+                        match = match,
+                        query = state.searchQuery.trim(),
+                        onOpenFile = {
+                            onOpen(
+                                WorkspaceFileEntry(
+                                    path = match.path,
+                                    name = match.path.substringAfterLast('/'),
+                                    isDirectory = false,
+                                    sizeBytes = 0L,
+                                    updatedAt = 0L,
+                                )
+                            )
+                        },
+                    )
+                }
+            }
+        } else {
+            if (!state.loading && state.entries.isEmpty() && state.error == null) {
+                item {
+                    EmptyDirectoryState()
+                }
+            }
+
+            items(state.entries, key = { "${state.area.name}:${it.path}" }) { entry ->
+                WorkspaceFileCard(
+                    entry = entry,
+                    area = state.area,
+                    onResolveImage = { onResolveImage(entry, state.area) },
+                    selecting = selecting,
+                    selected = entry.path in selectedPaths,
+                    onToggleSelection = { toggleSelection(entry) },
+                    onLongClick = {
+                        selecting = true
+                        selectedPaths = selectedPaths + entry.path
+                    },
+                    onOpen = {
+                        if (selecting && !entry.isDirectory) toggleSelection(entry) else onOpen(entry)
+                    },
+                    onDelete = { onDelete(entry) },
+                    onExport = { onExport(entry) },
+                    onShare = { onShare(entry) },
+                )
             }
         }
+    }
+}
 
-        items(state.entries, key = { "${state.area.name}:${it.path}" }) { entry ->
-            WorkspaceFileCard(
-                entry = entry,
-                area = state.area,
-                onResolveImage = { onResolveImage(entry, state.area) },
-                selecting = selecting,
-                selected = entry.path in selectedPaths,
-                onToggleSelection = { toggleSelection(entry) },
-                onLongClick = {
-                    selecting = true
-                    selectedPaths = selectedPaths + entry.path
+/**
+ * 搜索输入行：输入框 + 目标切换（文件名 / 内容）+ 范围切换（整个区域 / 仅当前目录）。
+ *
+ * 两个切换用文字按钮而不是下拉，是因为它们各自只有两个取值，
+ * 一眼能看见当前状态，不用点开才知道自己在搜什么。
+ */
+@Composable
+private fun WorkspaceSearchBar(
+    query: String,
+    mode: WorkspaceSearchMode,
+    wholeArea: Boolean,
+    searching: Boolean,
+    onQueryChange: (String) -> Unit,
+    onSubmit: () -> Unit,
+    onClear: () -> Unit,
+    onModeChange: (WorkspaceSearchMode) -> Unit,
+    onWholeAreaChange: (Boolean) -> Unit,
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        OutlinedTextField(
+            value = query,
+            onValueChange = onQueryChange,
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            label = { Text(stringResource(R.string.workspace_detail_search_hint)) },
+            leadingIcon = {
+                Icon(HugeIcons.Search01, contentDescription = null)
+            },
+            trailingIcon = {
+                if (query.isNotEmpty()) {
+                    IconButton(onClick = onClear) {
+                        Icon(HugeIcons.SearchRemove, contentDescription = stringResource(R.string.common_clear))
+                    }
+                } else if (searching) {
+                    CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                }
+            },
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+            keyboardActions = KeyboardActions(onSearch = { onSubmit() }),
+            shape = RoundedCornerShape(12.dp),
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            listOf(
+                WorkspaceSearchMode.NAME to stringResource(R.string.workspace_detail_search_by_name),
+                WorkspaceSearchMode.CONTENT to stringResource(R.string.workspace_detail_search_by_content),
+            ).forEach { (value, label) ->
+                SearchFilterChip(
+                    text = label,
+                    selected = mode == value,
+                    onClick = { onModeChange(value) },
+                )
+            }
+            SearchFilterChip(
+                text = if (wholeArea) {
+                    stringResource(R.string.workspace_detail_search_scope_all)
+                } else {
+                    stringResource(R.string.workspace_detail_search_scope_current)
                 },
-                onOpen = {
-                    if (selecting && !entry.isDirectory) toggleSelection(entry) else onOpen(entry)
-                },
-                onDelete = { onDelete(entry) },
-                onExport = { onExport(entry) },
-                onShare = { onShare(entry) },
+                selected = !wholeArea,
+                onClick = { onWholeAreaChange(!wholeArea) },
             )
         }
+    }
+}
+
+@Composable
+private fun SearchFilterChip(
+    text: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(50),
+        color = if (selected) MaterialTheme.colorScheme.secondaryContainer
+        else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+        contentColor = if (selected) MaterialTheme.colorScheme.onSecondaryContainer
+        else MaterialTheme.colorScheme.onSurfaceVariant,
+    ) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.labelMedium,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+        )
+    }
+}
+
+/** 结果计数行：说清搜了多大范围、命中多少、有没有被截断。 */
+@Composable
+private fun WorkspaceSearchSummary(
+    searching: Boolean,
+    mode: WorkspaceSearchMode,
+    wholeArea: Boolean,
+    path: String,
+    nameCount: Int,
+    matchCount: Int,
+    truncated: Boolean,
+) {
+    val text = when {
+        searching -> stringResource(R.string.workspace_detail_search_searching)
+        else -> {
+            val scope = if (wholeArea) {
+                stringResource(R.string.workspace_detail_search_scope_all)
+            } else {
+                stringResource(R.string.workspace_detail_search_scope_current, path.ifBlank { "/" })
+            }
+            val count = if (mode == WorkspaceSearchMode.NAME) nameCount else matchCount
+            stringResource(R.string.workspace_detail_search_result_count, count) + " · " + scope
+        }
+    }
+    Column {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        if (truncated && !searching) {
+            Text(
+                text = stringResource(R.string.workspace_detail_search_truncated),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.tertiary,
+            )
+        }
+    }
+}
+
+/** 内容搜索的命中行：文件路径 + 行号 + 命中文本，关键词高亮。 */
+@Composable
+private fun WorkspaceSearchMatchRow(
+    match: WorkspaceSearchMatch,
+    query: String,
+    onOpenFile: () -> Unit,
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .clickable(onClick = onOpenFile),
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    imageVector = HugeIcons.File02,
+                    contentDescription = null,
+                    modifier = Modifier.size(14.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    text = match.path,
+                    style = MaterialTheme.typography.labelLarge,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                Text(
+                    text = ":${match.line}",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
+            Text(
+                text = highlightQuery(match.text.trim(), query),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 3,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+/** 把命中关键词标成主色，其余保持默认色。 */
+@Composable
+private fun highlightQuery(text: String, query: String): AnnotatedString {
+    if (query.isBlank()) return AnnotatedString(text)
+    val regex = runCatching {
+        Regex(if (query.any { it in "*?[]{}()|^$+\\" }) query else Regex.escape(query), RegexOption.IGNORE_CASE)
+    }.getOrNull() ?: return AnnotatedString(text)
+    return buildAnnotatedString {
+        append(text)
+        regex.findAll(text).forEach { found ->
+            if (found.range.first <= found.range.last) {
+                addStyle(
+                    style = SpanStyle(
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.Bold,
+                    ),
+                    start = found.range.first,
+                    end = found.range.last + 1,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun EmptySearchResult() {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 32.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Icon(
+            imageVector = HugeIcons.Search01,
+            contentDescription = null,
+            modifier = Modifier.size(32.dp),
+            tint = MaterialTheme.colorScheme.outline,
+        )
+        Text(
+            text = stringResource(R.string.workspace_detail_search_empty),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 

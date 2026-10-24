@@ -118,6 +118,103 @@ class WorkspaceFileSystem(
         }
     }
 
+    /**
+     * 递归搜索文件名。给 UI 的搜索框用，比 [glob] 更贴合直觉：
+     * 直接输 `main` 就能命中，不需要写成 `*main*`。
+     *
+     * 规则：
+     * - query 里带 `*` 或 `?` 时按 glob 匹配相对路径；纯文本时按「忽略大小写包含」匹配文件名；
+     * - 排序按 精确 > 前缀 > 后缀 > 包含，同样权重再按名字，让最像的排最前；
+     * - 跳过 `.l2s.` 临时文件与搜索起点自身，与 [list] / [glob] 行为一致；
+     * - 遍历条目数超过 [WorkspaceConfig.maxSearchVisit] 或命中数超过 [WorkspaceConfig.maxSearchResults]
+     *   时停止并置 `truncated`，避免在整棵 rootfs 上无界扫描。
+     */
+    fun search(
+        root: File,
+        query: String,
+        path: String = "",
+        includeDirectories: Boolean = true,
+        limit: Int = config.maxSearchResults,
+    ): WorkspaceFileSearchResult {
+        val trimmed = query.trim()
+        if (trimmed.isEmpty()) return WorkspaceFileSearchResult()
+        val start = resolvePath(root, path)
+        if (!start.exists()) return WorkspaceFileSearchResult()
+
+        val hasWildcard = trimmed.any { it == '*' || it == '?' }
+        val globMatcher = if (hasWildcard) {
+            val pattern = if (trimmed.contains('/')) trimmed else "**/$trimmed"
+            runCatching { FileSystems.getDefault().getPathMatcher("glob:$pattern") }.getOrNull()
+        } else null
+        val needle = trimmed.lowercase()
+        val startPath = start.toPath()
+        val rootPath = root.toPath()
+
+        val matched = mutableListOf<Pair<File, Int>>()
+        var visited = 0
+        var truncated = false
+        Files.walk(startPath).use { stream ->
+            val iterator = stream.iterator()
+            while (iterator.hasNext()) {
+                val current = iterator.next()
+                if (visited >= config.maxSearchVisit) {
+                    truncated = true
+                    break
+                }
+                visited++
+                if (current == startPath) continue
+                val relative = runCatching { rootPath.relativize(current) }.getOrNull() ?: continue
+                // 临时条目要整棵剪掉：只过滤文件名的话，.l2s.tmp/ 里面的文件仍然会被搜出来
+                if (relative.any { it.toString().startsWith(TEMP_ENTRY_PREFIX) }) continue
+                val file = current.toFile()
+                val isDir = file.isDirectory
+                if (isDir && !includeDirectories) continue
+                if (!isDir && !file.isFile) continue
+                val hit = if (globMatcher != null) {
+                    runCatching { globMatcher.matches(relative.normalizeForMatch()) }.getOrDefault(false)
+                } else {
+                    file.name.lowercase().contains(needle)
+                }
+                if (!hit) continue
+                matched += file to nameRank(file.name, needle)
+                if (matched.size >= limit * 4) {
+                    // 先多攒一点再排序截断，否则「排在前面的」只是磁盘顺序而不是相关度
+                    truncated = true
+                    break
+                }
+            }
+        }
+
+        val entries = matched
+            .sortedWith(compareBy({ it.second }, { it.first.name.lowercase() }))
+            .take(limit)
+            .map { it.first.toEntry(root) }
+        return WorkspaceFileSearchResult(
+            entries = entries,
+            truncated = truncated || matched.size > limit,
+            visited = visited,
+        )
+    }
+
+    /**
+     * 相关度权重，0 最像。
+     *
+     * 文件名与「去掉扩展名的词干」各算一次取较小值，这样搜 `report` 时
+     * `report.txt` 排第一（词干精确命中），而不是被 `report-2024.txt` 这种
+     * 靠前缀匹配抢走位置 —— 纯按文件名算的话两者都是「前缀匹配」，分不出主次。
+     */
+    private fun nameRank(name: String, needle: String): Int {
+        val lower = name.lowercase()
+        val stem = lower.substringBeforeLast('.', lower)
+        fun rankOf(candidate: String) = when {
+            candidate == needle -> 0
+            candidate.startsWith(needle) -> 1
+            candidate.endsWith(needle) -> 2
+            else -> 3
+        }
+        return minOf(rankOf(lower), rankOf(stem))
+    }
+
     fun grep(
         root: File,
         query: String,
@@ -211,4 +308,9 @@ class WorkspaceFileSystem(
 
     private fun Path.relativeToString(): String =
         joinToString("/") { it.name }
+
+    private companion object {
+        /** 工作区内部临时条目的名字前缀：搜索与列表都不该看见它，连同它的整棵子树一起剪掉。 */
+        const val TEMP_ENTRY_PREFIX = ".l2s."
+    }
 }

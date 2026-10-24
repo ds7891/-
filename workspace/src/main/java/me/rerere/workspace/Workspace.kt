@@ -41,6 +41,8 @@ data class WorkspaceConfig(
     val maxWriteBytes: Long = 2 * 1024 * 1024,
     val maxListEntries: Int = 500,
     val maxSearchResults: Int = 100,
+    /** 单次搜索最多遍历多少个条目：Linux 区整棵 rootfs 有几万个文件，不设上限会卡住主线程之外的整条协程。 */
+    val maxSearchVisit: Int = 20_000,
 )
 
 data class WorkspaceFileEntry(
@@ -55,6 +57,13 @@ data class WorkspaceSearchMatch(
     val path: String,
     val line: Int,
     val text: String,
+)
+
+/** 文件名搜索结果。[truncated] 为 true 表示命中过多或遍历到上限，结果只是前一部分。 */
+data class WorkspaceFileSearchResult(
+    val entries: List<WorkspaceFileEntry> = emptyList(),
+    val truncated: Boolean = false,
+    val visited: Int = 0,
 )
 
 data class WorkspaceCommandResult(

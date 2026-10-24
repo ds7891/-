@@ -188,6 +188,9 @@ class SettingsStore(
         // 清水特色功能
         val QINGSHUI_FEATURES = stringPreferencesKey("qingshui_features")
 
+        // QQ 机器人
+        val QQ_BOT_CONFIG = stringPreferencesKey("qq_bot_config")
+
         // WebDAV
         val WEBDAV_CONFIG = stringPreferencesKey("webdav_config")
 
@@ -269,6 +272,7 @@ class SettingsStore(
                 preferences[SUB_AGENTS] = JsonInstant.encodeToString(settings.subAgents)
                 preferences[ENABLE_SUB_AGENTS] = settings.enableSubAgents
                 preferences[QINGSHUI_FEATURES] = JsonInstant.encodeToString(settings.qingshuiFeatures)
+                preferences[QQ_BOT_CONFIG] = JsonInstant.encodeToString(settings.qqBotConfig)
                 preferences[WEBDAV_CONFIG] = JsonInstant.encodeToString(settings.webDavConfig)
                 preferences[S3_CONFIG] = JsonInstant.encodeToString(settings.s3Config)
                 preferences[TTS_PROVIDERS] = JsonInstant.encodeToString(settings.ttsProviders)
@@ -371,6 +375,9 @@ class SettingsStore(
                 qingshuiFeatures = preferences[QINGSHUI_FEATURES].decodeCached("qingshui_features") {
                     JsonInstant.decodeFromString(it)
                 } ?: QingshuiFeatures(),
+                qqBotConfig = preferences[QQ_BOT_CONFIG].decodeCached("qq_bot_config") {
+                    JsonInstant.decodeFromString(it)
+                } ?: QQBotConfig(),
                 webDavConfig = preferences[WEBDAV_CONFIG].decodeCached("webdav_config") {
                     JsonInstant.decodeFromString(it)
                 } ?: WebDavConfig(),
@@ -662,6 +669,7 @@ data class Settings(
     val subAgents: List<SubAgent> = emptyList(),
     val enableSubAgents: Boolean = true,
     val qingshuiFeatures: QingshuiFeatures = QingshuiFeatures(),
+    val qqBotConfig: QQBotConfig = QQBotConfig(),
     val webDavConfig: WebDavConfig = WebDavConfig(),
     val s3Config: S3Config = S3Config(),
     val ttsProviders: List<TTSProviderSetting> = DEFAULT_TTS_PROVIDERS,
@@ -783,6 +791,120 @@ enum class WhitewashLevel {
 
     @SerialName("strong")
     STRONG,
+}
+
+/**
+ * QQ 机器人接入配置。走 OneBot v11 的 HTTP 实现，
+ * 覆盖 NapCat、LLOneBot、Lagrange.Core、NoneBot 自建等绝大多数自用方案。
+ *
+ * @param baseUrl 实现端监听的 HTTP 地址，如 http://192.168.1.10:3000
+ * @param token OneBot 的 access_token，填了就走 Authorization: Bearer 头
+ * @param maxPushChars 推送长度上限：QQ 单条消息有长度限制，本地先截，别等上游报错
+ */
+/**
+ * QQ 机器人协议。
+ *
+ * - [QQ_OFFICIAL]：腾讯官方 QQ 机器人（q.qq.com 申请的 AppID / AppSecret），
+ *   走 bots.qq.com 取 token + api.sgroup.qq.com 收发，**群里只有 @ 机器人才会推送**，
+ *   且回复必须在收到消息后 60 秒内发出；
+ * - [ONEBOT_V11]：自建实现端（NapCat / LLOneBot / Lagrange / NoneBot）的 HTTP + 反向 WS。
+ */
+@Serializable
+enum class QQBotProtocol {
+    @SerialName("qq_official")
+    QQ_OFFICIAL,
+
+    @SerialName("onebot_v11")
+    ONEBOT_V11,
+}
+
+/**
+ * QQ 机器人接入配置。
+ *
+ * 官方协议只需要 AppID + AppSecret；OneBot 协议需要实现端的 HTTP 地址与 token。
+ * 回复统一走清水内部一个专用助手（[assistantId] 指向），它的模型、人设、联网开关
+ * 由本卡片直接维护 —— 这样群里只回答问题、不挂本机工具，
+ * 同时这些对话仍会出现在聊天列表里，答歪了能点进去手动纠正。
+ */
+@Serializable
+data class QQBotConfig(
+    val enabled: Boolean = false,
+    val protocol: QQBotProtocol = QQBotProtocol.QQ_OFFICIAL,
+
+    // ---------------- 官方 QQ 机器人 ----------------
+    val appId: String = "",
+    val appSecret: String = "",
+    /** 展示给另一台手机扫码配对的链接（从 q.qq.com 沙箱页复制） */
+    val pairingQrText: String = "",
+
+    // ---------------- OneBot v11 ----------------
+    val baseUrl: String = "",
+    val token: String = "",
+    /** 反向 WebSocket 地址；官方协议下忽略 */
+    val wsUrl: String = "",
+    val targetUserId: String = "",
+    val targetGroupId: String = "",
+    /** 两个都填时优先发群；关掉则优先发私聊 */
+    val preferGroup: Boolean = false,
+
+    // ---------------- 回复行为 ----------------
+    /** 群聊里只有被 @ 才回。官方协议下服务端本来就只推 @ 事件，这条主要管 OneBot */
+    val requireAtInGroup: Boolean = true,
+    /** 私聊消息是否自动回复 */
+    val replyPrivate: Boolean = true,
+    /** 像群友一样说话：短句、口语、不列清单、不自称 AI；被 @ 又没事会反问 */
+    val groupPersona: Boolean = true,
+    /** 自定义人设，追加在群友人设后面；留空则只用内置那套 */
+    val customPrompt: String = "",
+    /** 允许联网搜索（走助手自带的 web search，不挂本机工具） */
+    val enableWebSearch: Boolean = true,
+    /** 回复用的模型；为空则用全局默认模型 */
+    val chatModelId: String = "",
+    /** 清水为 QQ 自动维护的专用助手 id，首次配置时生成 */
+    val assistantId: String = "",
+    /** 同一目标两次回复的最小间隔（秒），防连珠炮 */
+    val minReplyIntervalSeconds: Int = 8,
+    /** 每小时最多自动回复条数，0 表示不限 */
+    val hourlyReplyLimit: Int = 60,
+    /** 只处理这些群 / 用户，逗号分隔；留空不限 */
+    val allowGroupIds: String = "",
+    val allowUserIds: String = "",
+    /**
+     * 最近一次活跃目标。
+     * 官方协议的 group_openid / user_openid 只能从事件里拿到、没法自己编，
+     * 所以「App 内生成完成推送」要用它作为投递地址 —— 你得先在群里 @ 它一次。
+     */
+    val lastGroupOpenid: String = "",
+    val lastUserOpenid: String = "",
+    /** 生成结束后把结果摘要推到 QQ（仅对 App 内发起的对话生效） */
+    val notifyOnFinish: Boolean = false,
+    val notifyWithModelName: Boolean = true,
+    val maxPushChars: Int = 800,
+    /** 双向总开关：关掉就只出不进 */
+    val inboundEnabled: Boolean = false,
+    /**
+     * QQ 目标 → 清水会话 id。
+     * 存下来让同一个群始终接在同一条上下文里，也方便在聊天列表里翻完整对话。
+     */
+    val conversationBindings: Map<String, String> = emptyMap(),
+) {
+    /** 是否已经配好一个可用的投递目标（OneBot 用；官方协议的目标从事件里取）。 */
+    val hasTarget: Boolean get() = targetUserId.isNotBlank() || targetGroupId.isNotBlank()
+
+    /** 当前协议下出站所需信息是否齐了。 */
+    val canSend: Boolean
+        get() = when (protocol) {
+            QQBotProtocol.QQ_OFFICIAL -> appId.isNotBlank() && appSecret.isNotBlank()
+            QQBotProtocol.ONEBOT_V11 -> baseUrl.isNotBlank()
+        }
+
+    val groupWhitelist: List<String>
+        get() = allowGroupIds.split(',', '，', ' ', '\n').map { it.trim() }.filter { it.isNotEmpty() }
+    val userWhitelist: List<String>
+        get() = allowUserIds.split(',', '，', ' ', '\n').map { it.trim() }.filter { it.isNotEmpty() }
+
+    fun allowsGroup(id: String): Boolean = groupWhitelist.isEmpty() || id in groupWhitelist
+    fun allowsUser(id: String): Boolean = userWhitelist.isEmpty() || id in userWhitelist
 }
 
 /** 工具调用协议：自动 / 原生 tool_calls / 本地 XML 协议 */

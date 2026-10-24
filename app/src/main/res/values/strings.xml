@@ -102,6 +102,9 @@
   <string name="assistant_page_local_tools_tcp_desc">Connect to any port, send bytes and read the reply — for private protocols and port probing beyond HTTP</string>
   <string name="assistant_page_local_tools_websocket_title">WebSocket</string>
   <string name="assistant_page_local_tools_websocket_desc">Connect to ws/wss endpoints, send messages and collect real-time replies</string>
+
+  <string name="assistant_page_local_tools_qq_bot_title">QQ Bot</string>
+  <string name="assistant_page_local_tools_qq_bot_desc">Send messages to QQ through a OneBot v11 implementation (NapCat / LLOneBot / Lagrange / NoneBot). Use it to notify when a long task finishes or when the user asks for the answer on QQ.</string>
   <string name="assistant_page_manage_memory_title">Manage Memory</string>
   <string name="assistant_page_max_tokens">Max Tokens</string>
   <string name="assistant_page_max_tokens_desc">Maximum number of tokens to generate. Leave empty for no limit.</string>
@@ -1426,6 +1429,15 @@
   <string name="workspace_detail_delete_directory">Delete Directory</string>
   <string name="workspace_detail_delete_file">Delete File</string>
   <string name="workspace_detail_will_delete">Will delete %s.</string>
+  <string name="workspace_detail_search_hint">Search files</string>
+  <string name="workspace_detail_search_by_name">By name</string>
+  <string name="workspace_detail_search_by_content">By content</string>
+  <string name="workspace_detail_search_scope_all">Whole area</string>
+  <string name="workspace_detail_search_scope_current">Current dir only (%1$s)</string>
+  <string name="workspace_detail_search_searching">Searching…</string>
+  <string name="workspace_detail_search_result_count">%1$d results</string>
+  <string name="workspace_detail_search_truncated">Too many hits — showing the most relevant ones first</string>
+  <string name="workspace_detail_search_empty">No matches</string>
   <string name="workspace_detail_installing">Installing</string>
   <string name="workspace_detail_reinstall_rootfs">Reinstall Rootfs</string>
   <string name="workspace_detail_install_rootfs">Install Rootfs</string>
@@ -1481,6 +1493,7 @@
   <string name="workspace_cwd_reset">Reset</string>
   <string name="workspace_cwd_set">Set as CWD</string>
   <string name="common_confirm">OK</string>
+  <string name="common_clear">Clear</string>
   <string name="common_install">Install</string>
   <string name="common_cancel">Cancel</string>
   <string name="common_save">Save</string>

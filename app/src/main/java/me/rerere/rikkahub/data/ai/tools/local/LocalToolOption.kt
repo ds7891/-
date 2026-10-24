@@ -60,4 +60,8 @@ sealed class LocalToolOption {
     @Serializable
     @SerialName("websocket")
     data object WebSocket : LocalToolOption()
+
+    @Serializable
+    @SerialName("qq_bot")
+    data object QQBot : LocalToolOption()
 }

@@ -404,6 +404,20 @@ private fun AssistantLocalToolContent(
                     )
                 }
             )
+            item(
+                headlineContent = {
+                    Text(stringResource(R.string.assistant_page_local_tools_qq_bot_title))
+                },
+                supportingContent = {
+                    Text(stringResource(R.string.assistant_page_local_tools_qq_bot_desc))
+                },
+                trailingContent = {
+                    Switch(
+                        checked = assistant.localTools.contains(LocalToolOption.QQBot),
+                        onCheckedChange = { toggleLocalTool(LocalToolOption.QQBot, it) }
+                    )
+                }
+            )
         }
     }
 }

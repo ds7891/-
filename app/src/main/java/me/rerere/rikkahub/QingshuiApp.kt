@@ -37,6 +37,7 @@ import me.rerere.rikkahub.data.sync.RestoreFailedException
 import me.rerere.rikkahub.utils.JsonInstant
 import me.rerere.rikkahub.service.WebServerService
 import me.rerere.rikkahub.service.ChatNotificationManager
+import me.rerere.rikkahub.data.qqbot.QQBotGateway
 import me.rerere.rikkahub.data.ai.mcp.McpManager
 import me.rerere.rikkahub.data.builtin.BuiltinProxyManager
 import me.rerere.rikkahub.web.WebServerManager
@@ -117,6 +118,9 @@ class QingshuiApp : Application() {
             // 额外服务：进入首页后再初始化，避免拖慢冷启动
             runCatching { get<ChatNotificationManager>() }
                 .onFailure { Log.e(TAG, "init ChatNotificationManager failed", it) }
+            // QQ 机器人：构造即订阅，配置里打开开关才会去连实现端
+            runCatching { get<QQBotGateway>() }
+                .onFailure { Log.e(TAG, "init QQBotGateway failed", it) }
             runCatching { get<BuiltinProxyManager>() }
                 .onFailure { Log.e(TAG, "init BuiltinProxyManager failed", it) }
             runCatching { get<McpManager>() }

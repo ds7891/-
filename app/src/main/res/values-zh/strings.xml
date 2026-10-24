@@ -1396,6 +1396,15 @@ mDNS 地址：使用 .local 主机名，同一网络中的其他设备可通过�
   <string name="workspace_detail_delete_directory">删除目录</string>
   <string name="workspace_detail_delete_file">删除文件</string>
   <string name="workspace_detail_will_delete">将删除 %s.</string>
+  <string name="workspace_detail_search_hint">搜索文件</string>
+  <string name="workspace_detail_search_by_name">按文件名</string>
+  <string name="workspace_detail_search_by_content">按内容</string>
+  <string name="workspace_detail_search_scope_all">整个区域</string>
+  <string name="workspace_detail_search_scope_current">仅当前目录（%1$s）</string>
+  <string name="workspace_detail_search_searching">正在搜索…</string>
+  <string name="workspace_detail_search_result_count">%1$d 个结果</string>
+  <string name="workspace_detail_search_truncated">命中过多，按相关度只显示最前面的部分</string>
+  <string name="workspace_detail_search_empty">没有匹配项</string>
   <string name="workspace_detail_installing">安装中</string>
   <string name="workspace_detail_reinstall_rootfs">重新安装 Rootfs</string>
   <string name="workspace_detail_install_rootfs">安装 Rootfs</string>
@@ -1444,6 +1453,8 @@ mDNS 地址：使用 .local 主机名，同一网络中的其他设备可通过�
   <string name="workspace_cwd_reset">重置</string>
   <string name="workspace_cwd_set">设为CWD</string>
   <string name="common_confirm">确定</string>
+  <string name="common_clear">清除</string>
+  <string name="common_delete_confirm_message">确定要删除「%s」吗？此操作无法撤销。</string>
   <string name="common_install">安装</string>
   <string name="common_cancel">取消</string>
   <string name="common_save">保存</string>
@@ -1518,6 +1529,9 @@ mDNS 地址：使用 .local 主机名，同一网络中的其他设备可通过�
   <string name="assistant_page_local_tools_tcp_desc">直连任意端口发送字节并读回响应，用于 HTTP 之外的私有协议与端口探测</string>
   <string name="assistant_page_local_tools_websocket_title">WebSocket</string>
   <string name="assistant_page_local_tools_websocket_desc">连接 ws/wss 接口，发送消息并收集服务端实时回包</string>
+
+  <string name="assistant_page_local_tools_qq_bot_title">QQ 机器人</string>
+  <string name="assistant_page_local_tools_qq_bot_desc">通过 OneBot v11 实现端（NapCat / LLOneBot / Lagrange / NoneBot）往 QQ 发消息。适合长任务跑完通知一声、或用户要求把答案发到 QQ。</string>
   <string name="media_browser_title">媒体浏览器</string>
   <string name="media_browser_menu">媒体浏览器</string>
   <string name="media_browser_folder">文件夹</string>

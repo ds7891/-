@@ -15,7 +15,9 @@ import me.rerere.workspace.RootfsInstallProgress
 import me.rerere.workspace.RootfsInstaller
 import me.rerere.workspace.WorkspaceCommandResult
 import me.rerere.workspace.WorkspaceFileEntry
+import me.rerere.workspace.WorkspaceFileSearchResult
 import me.rerere.workspace.WorkspaceManager
+import me.rerere.workspace.WorkspaceSearchMatch
 import me.rerere.workspace.WorkspaceShellStatus
 import me.rerere.workspace.WorkspaceStorageArea
 import java.io.ByteArrayOutputStream
@@ -152,6 +154,37 @@ class WorkspaceRepository(
         val workspace = dao.getById(id) ?: return@withContext emptyList()
         manager.ensureWorkspace(workspace.root)
         manager.listFiles(workspace.root, path, area)
+    }
+
+    /**
+     * 递归搜索文件名。用 [runInterruptible] 包住：整棵 rootfs 遍历可能要一两秒，
+     * 用户边打字边触发时，上一次的扫描必须能被立刻取消，否则会堆一堆无效遍历。
+     */
+    suspend fun searchFiles(
+        id: String,
+        area: WorkspaceStorageArea,
+        path: String,
+        query: String,
+    ): WorkspaceFileSearchResult = withContext(Dispatchers.IO) {
+        val workspace = dao.getById(id) ?: return@withContext WorkspaceFileSearchResult()
+        manager.ensureWorkspace(workspace.root)
+        runInterruptible {
+            manager.searchFiles(workspace.root, query, path, area)
+        }
+    }
+
+    /** 按文件内容搜索，返回命中行。 */
+    suspend fun grepFiles(
+        id: String,
+        area: WorkspaceStorageArea,
+        path: String,
+        query: String,
+    ): List<WorkspaceSearchMatch> = withContext(Dispatchers.IO) {
+        val workspace = dao.getById(id) ?: return@withContext emptyList()
+        manager.ensureWorkspace(workspace.root)
+        runInterruptible {
+            manager.grep(workspace.root, query, path, area)
+        }
     }
 
     suspend fun readText(

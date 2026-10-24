@@ -13,6 +13,9 @@ import me.rerere.rikkahub.data.ai.tools.ChatToolFactory
 import me.rerere.rikkahub.data.builtin.BuiltinModelRepository
 import me.rerere.rikkahub.data.builtin.BuiltinProxyManager
 import me.rerere.rikkahub.data.builtin.BuiltinProxyServer
+import me.rerere.rikkahub.data.qqbot.QQBotGateway
+import me.rerere.rikkahub.data.qqbot.QQBotSocketClient
+import me.rerere.rikkahub.data.qqbot.QQOfficialSocketClient
 import me.rerere.rikkahub.data.builtin.WorkBuddyAuthApi
 import me.rerere.rikkahub.data.builtin.growth.WorkBuddyGrowthApi
 import me.rerere.rikkahub.data.builtin.growth.WorkBuddyTaskRunner
@@ -135,6 +138,23 @@ val appModule = module {
             filesManager = get(),
             workspaceRepository = get(),
             folderRepository = get()
+        )
+    }
+
+    // QQ 机器人：反向 WebSocket 收消息 → 判定要不要答 → 交给 ChatService 生成 → 回投 QQ。
+    // 依赖 ChatService，必须注册在它后面。
+    single { QQBotSocketClient(scope = get()) }
+    single { QQOfficialSocketClient(scope = get()) }
+
+    single {
+        QQBotGateway(
+            settingsStore = get(),
+            conversationRepository = get(),
+            chatService = get(),
+            oneBotClient = get(),
+            officialClient = get(),
+            appScope = get(),
+            eventBus = get(),
         )
     }
 
