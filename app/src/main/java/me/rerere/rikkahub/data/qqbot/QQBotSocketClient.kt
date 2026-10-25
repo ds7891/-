@@ -195,7 +195,9 @@ class QQBotSocketClient(private val scope: CoroutineScope) {
         val userId = json.stringish("user_id")
         if (userId.isBlank() && groupId.isBlank()) return null
 
-        val raw = json["message"]
+        // 先判空：json["message"] 为 null 时也会落进 when 的 else 分支，
+        // 那样 else 里的 raw.jsonArray 就成了对可空值直接调用
+        val raw = json["message"] ?: return null
         var text = ""
         var mentioned = false
         when (raw) {
@@ -219,7 +221,7 @@ class QQBotSocketClient(private val scope: CoroutineScope) {
                                 mentioned = true
                             } else {
                                 // @ 别人时保留名字，机器人看得懂这句话在说谁
-                                val name = seg["data"]?.jsonObject?.stringish("name")
+                                val name = seg["data"]?.jsonObject?.stringish("name").orEmpty()
                                 if (name.isNotBlank()) builder.append('@').append(name).append(' ')
                             }
                         }

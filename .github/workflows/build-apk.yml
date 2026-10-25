@@ -251,13 +251,14 @@ jobs:
         run: |
           for log in /tmp/build.log /tmp/build-debug.log; do
             [ -f "$log" ] || continue
-            # 日志里可能带 Actions 时间戳前缀，也可能不带（tee 出来的原始输出），两种都吃
-            grep -E "e: file:///" "$log" | head -40 | while IFS= read -r line; do
-              file=$(printf '%s' "$line" | sed -E 's|.*e: file://([^ :]+).*|\1|; s|^/home/runner/work/[^/]+/[^/]+/||')
-              ln=$(printf '%s' "$line" | sed -E 's|.*\.kt:[0-9]+:([0-9]+).*|\1|')
-              col=$(printf '%s' "$line" | sed -E 's|.*\.kt:([0-9]+):[0-9]+.*|\1|')
+            # Gradle 9 输出的是仓库相对路径（e: app/src/.../File.kt:209:49 msg），
+            # 旧版是 file:/// 绝对路径；两种都要吃，否则 annotation 只有消息没有位置。
+            grep -aoE "e: (file://)?[^ ]+\.kt:[0-9]+:[0-9]+ .*" "$log" | head -40 | while IFS= read -r line; do
+              file=$(printf '%s' "$line" | sed -E 's|^e: (file://)?||; s|^/home/runner/work/[^/]+/[^/]+/||; s|\.kt:.*|.kt|')
+              ln=$(printf '%s' "$line" | sed -E 's|.*\.kt:([0-9]+):[0-9]+ .*|\1|')
+              col=$(printf '%s' "$line" | sed -E 's|.*\.kt:[0-9]+:([0-9]+) .*|\1|')
               msg=$(printf '%s' "$line" | sed -E 's|.*\.kt:[0-9]+:[0-9]+ ||' | tr -d '\r' | cut -c1-300)
-              echo "::error file=$file,line=$col,col=$ln,title=Kotlin 编译错误::$msg"
+              echo "::error file=$file,line=$ln,col=$col,title=Kotlin 编译错误::$msg"
             done
             grep -E "^\* What went wrong:" -A 6 "$log" | head -12 || true
           done
