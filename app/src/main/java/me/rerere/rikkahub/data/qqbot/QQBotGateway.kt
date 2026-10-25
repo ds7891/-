@@ -20,8 +20,6 @@ import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.repository.ConversationRepository
 import me.rerere.rikkahub.service.ChatService
-import kotlinx.datetime.Clock
-import kotlinx.datetime.toLocalDateTime
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.uuid.Uuid
 
@@ -63,8 +61,11 @@ class QQBotGateway(
     val recentEvents = _recentEvents.asStateFlow()
 
     private fun logEvent(line: String) {
-        val stamp = Clock.System.now().toLocalDateTime(kotlinx.datetime.TimeZone.currentSystemDefault()).time
-            .toString().take(8)
+        // 用 JDK 自带的格式化拿时间戳。
+        // 本来想用 Clock.System.now()，但项目里那套是 kotlin.time.Clock（Kotlin 2.1 标准库），
+        // 我错写成 kotlinx.datetime.Clock —— kotlinx-datetime 0.8 已经把 Clock.System 迁走了，
+        // 于是 Clock 能解析、System 解析不到。这里只要一个 HH:mm:ss 前缀，用 SimpleDateFormat 最省事。
+        val stamp = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US).format(java.util.Date())
         _recentEvents.update { (listOf("$stamp  $line") + it).take(15) }
     }
 

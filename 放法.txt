@@ -1,0 +1,13 @@
+先删再放，别粘贴覆盖（你的工具会把同名文件另存成 xxx(1).kt，导致重复声明）。
+
+1) 仓库根目录删掉这几个目录：
+      app/   ai/   workspace/   .github/     ← .github 要开「显示隐藏文件」
+
+2) 解压本 zip，把里面同名的四个目录整个复制进仓库根
+
+3) keystore/ 保留你仓库那份（里面有口令），别用包里的空模板
+
+新 workflow 里有三道自动检查，出错会直接点名：
+  Detect duplicated declarations   哪个类和哪个文件重复了
+  Guard duplicated flat-named sources   带 __ 的副本文件
+  Report compile errors            编译错误的文件名+行号
