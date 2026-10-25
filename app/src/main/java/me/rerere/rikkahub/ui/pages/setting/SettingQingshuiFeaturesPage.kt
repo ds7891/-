@@ -37,6 +37,8 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlin.uuid.Uuid
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import me.rerere.ai.provider.ModelType
 import me.rerere.ai.provider.ProviderSetting
@@ -76,7 +78,8 @@ fun SettingQingshuiFeaturesPage(vm: SettingVM = koinViewModel()) {
 
     fun update(newFeatures: QingshuiFeatures) {
         features = newFeatures
-        vm.updateSettings(settings.copy(qingshuiFeatures = newFeatures))
+        // 传函数而不是 settings.copy(...)：见 SettingVM.updateSettings(fn) 的注释
+        vm.updateSettings { it.copy(qingshuiFeatures = newFeatures) }
     }
 
     var showCustomRulesDialog by remember { mutableStateOf(false) }
@@ -89,7 +92,7 @@ fun SettingQingshuiFeaturesPage(vm: SettingVM = koinViewModel()) {
 
     fun updateQQBot(config: QQBotConfig) {
         qqBot = config
-        vm.updateSettings(settings.copy(qqBotConfig = config))
+        vm.updateSettings { it.copy(qqBotConfig = config) }
     }
 
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
@@ -269,6 +272,9 @@ fun SettingQingshuiFeaturesPage(vm: SettingVM = koinViewModel()) {
             item {
                 QQBotCard(
                     config = qqBot,
+                    // saved 取自 settingsFlow，是真正落盘的值；config 是界面输入态。
+                    // 两者不一致就说明写入被吞了，不用再靠"填了却说没填"去猜。
+                    saved = settings.qqBotConfig,
                     providers = settings.providers,
                     onUpdate = ::updateQQBot,
                 )
@@ -595,6 +601,7 @@ private fun WhitewashPreviewDialog(
 @Composable
 private fun QQBotCard(
     config: QQBotConfig,
+    saved: QQBotConfig,
     providers: List<ProviderSetting>,
     onUpdate: (QQBotConfig) -> Unit,
 ) {
@@ -606,10 +613,14 @@ private fun QQBotCard(
     val gateway: QQBotGateway? = remember {
         runCatching { getKoin().get<QQBotGateway>() }.getOrNull()
     }
-    val linkStatus by (gateway?.status ?: kotlinx.coroutines.flow.MutableStateFlow("不可用"))
-        .collectAsStateWithLifecycle()
-    val events by (gateway?.recentEvents ?: kotlinx.coroutines.flow.MutableStateFlow(emptyList<String>()))
-        .collectAsStateWithLifecycle()
+    // fallback 用 remember 固定住：直接写在 ?: 右边会每次重组新建一个 MutableStateFlow，
+    // 让 collectAsStateWithLifecycle 反复重建订阅。类型也显式标出来，不靠 LUB 推断。
+    val fallbackStatus = remember { MutableStateFlow("QQ 服务未就绪") }
+    val fallbackEvents = remember { MutableStateFlow(emptyList<String>()) }
+    val statusFlow: StateFlow<String> = gateway?.status ?: fallbackStatus
+    val eventsFlow: StateFlow<List<String>> = gateway?.recentEvents ?: fallbackEvents
+    val linkStatus by statusFlow.collectAsStateWithLifecycle()
+    val events by eventsFlow.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
     var testing by remember { mutableStateOf(false) }
     var sending by remember { mutableStateOf(false) }
@@ -1004,6 +1015,38 @@ private fun QQBotCard(
                         text = linkStatus,
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.primary,
+                    )
+                    val savedId = saved.appId.trim()
+                    val savedSecret = saved.appSecret.trim()
+                    val typedId = config.appId.trim()
+                    val typedSecret = config.appSecret.trim()
+                    // 「还没配」和「配了没存上」是两回事，得分开显示：
+                    // 前者用中性色提示，后者才用红色报错 —— 否则新用户一进来就看到红字。
+                    val notPersisted = (typedId.isNotEmpty() && savedId.isEmpty()) ||
+                            (typedSecret.isNotEmpty() && savedSecret.isEmpty())
+                    val persisted = when {
+                        notPersisted -> {
+                            val missing = buildString {
+                                if (typedId.isNotEmpty() && savedId.isEmpty()) append("AppID")
+                                if (typedId.isNotEmpty() && savedId.isEmpty() && typedSecret.isNotEmpty() && savedSecret.isEmpty()) append(" 和 ")
+                                if (typedSecret.isNotEmpty() && savedSecret.isEmpty()) append("AppSecret")
+                            }
+                            "$missing 填了但没存上　⚠ 改动没落盘"
+                        }
+                        savedId.isEmpty() && savedSecret.isEmpty() -> "还没配置"
+                        savedId.isEmpty() -> "AppID 没存上"
+                        savedSecret.isEmpty() -> "AppSecret 没存上"
+                        else -> "AppID $savedId / 密钥 ${savedSecret.length} 位"
+                    }
+                    Text(
+                        text = "已保存：$persisted",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = when {
+                            notPersisted -> MaterialTheme.colorScheme.error
+                            savedId.isEmpty() && savedSecret.isEmpty() -> MaterialTheme.colorScheme.onSurfaceVariant
+                            else -> MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                        modifier = Modifier.padding(top = 4.dp),
                     )
                     if (config.protocol == QQBotProtocol.QQ_OFFICIAL) {
                         Text(

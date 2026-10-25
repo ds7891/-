@@ -64,7 +64,9 @@ fun QQBotQrCode(
 private fun generateQrBitmap(text: String, sizePx: Int): Bitmap? {
     if (text.isBlank()) return null
     return runCatching {
-        val hints = mapOf(
+        // 值有枚举 / Int / String 三种，不显式标注的话 LUB 会算出一个奇怪的类型，
+        // 而 QRCodeWriter.encode 要的是 Map<EncodeHintType, *>，这里直接标成 Any 最稳。
+        val hints: Map<EncodeHintType, Any> = mapOf(
             EncodeHintType.ERROR_CORRECTION to ErrorCorrectionLevel.M,
             // 留一格静区，贴着屏幕边缘扫会失败
             EncodeHintType.MARGIN to 1,

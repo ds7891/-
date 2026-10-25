@@ -23,4 +23,19 @@ class SettingVM(
             settingsStore.update(settings)
         }
     }
+
+    /**
+     * 基于当前真实设置做增量修改。
+     *
+     * 别用 updateSettings(settings.copy(...)) 传页面快照：dataStore 尚未加载完时，
+     * 页面拿到的 settings 是 SettingsStore 的占位值（init=true），
+     * 而 SettingsStore.update 对 init=true 是直接 return 的 —— 表现就是
+     * 「界面上改了、也显示着，但根本没存进去」，且没有任何提示。
+     * 这里走 update(fn)，fn 收到的一定是 settingsFlow.value，不会踩到占位值。
+     */
+    fun updateSettings(fn: (Settings) -> Settings) {
+        viewModelScope.launch {
+            settingsStore.update(fn)
+        }
+    }
 }
