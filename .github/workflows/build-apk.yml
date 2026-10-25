@@ -187,6 +187,26 @@ jobs:
 
 
 
+      # 找出「同一个顶层类被声明了两遍」的文件对。
+      # 覆盖复制粘贴时产生的 (1)/2 副本、扁平命名副本、以及文件被追加成两份的情况，
+      # 这三种都会让编译器报一大片 Conflicting overloads，但错误信息从不告诉你多出来的是哪个文件。
+      - name: Detect duplicated declarations
+        run: |
+          set -uo pipefail
+          report=$(grep -rlE "^(data class|sealed class|enum class|abstract class|open class|class|object|interface) " \
+                     --include="*.kt" app/src/main/java 2>/dev/null \
+                   | while read -r f; do
+                       grep -oE "^(data class|sealed class|enum class|abstract class|open class|class|object|interface) [A-Za-z0-9_]+" "$f" \
+                         | awk -v F="$f" '{print $NF"\t"F}'
+                     done \
+                   | sort | awk -F'\t' 'p==$1{print "  "p": "prev"  <->  "$2} {p=$1;prev=$2}')
+          if [ -n "$report" ]; then
+            echo "::error::发现重复声明的类，请删除多余的那一份文件"
+            printf '%s\n' "$report"
+            exit 1
+          fi
+          echo "未发现重复声明"
+
       # 上一轮我给过文件名里带 __ 的扁平副本（为了绕开 .github 隐藏目录），
       # 那种文件如果被复制进源码目录，同一个包内就会出现两份同名函数，
       # 报 Overload resolution ambiguity —— 而且编译器不会告诉你是哪个文件多余。

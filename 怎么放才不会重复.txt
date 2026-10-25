@@ -1,0 +1,27 @@
+别用「粘贴覆盖」，用「先删再放」。
+
+你那个同步/复制工具遇到同名文件不覆盖，而是另存成 xxx(1).kt，
+于是一个类被声明两遍，编译器报一大片 Conflicting overloads。
+
+正确做法（三步）：
+
+  1) 进仓库根目录，把这三个东西整个删掉：
+        app/
+        ai/
+        .github/          ← 隐藏目录，要先开「显示隐藏文件」
+     （其余目录不用动，gradle/ settings.gradle.kts 都保持原样）
+
+  2) 把本 zip 解压到临时位置，从里面把这四个整个复制进仓库根：
+        app/
+        ai/
+        .github/
+        workspace/
+
+  3) keystore/ 保持你仓库里那份（有口令），别用包里的空模板
+
+这样不可能留下 (1) 副本。
+
+新 workflow 里有一步 Detect duplicated declarations，
+万一还是重了，它会直接打印：
+   QQBotConfig: .../PreferencesStore(1).kt  <->  .../PreferencesStore.kt
+你照着删左边那个就行，不用猜。
