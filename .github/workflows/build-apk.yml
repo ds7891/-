@@ -187,6 +187,28 @@ jobs:
 
 
 
+      # 自动修补已知的两处可空接收者写法。
+      # 幂等：文件已经是修复版时 sed 匹配不到，什么都不改；是旧版时当场补上，
+      # 并把差异打进日志 —— 这样既能直接构建通过，也能一眼看出仓库里到底是哪个版本。
+      - name: Patch known nullable-receiver sites
+        if: inputs.build_type != 'debug'
+        run: |
+          set -uo pipefail
+          F="app/src/main/java/me/rerere/rikkahub/data/qqbot/QQBotSocketClient.kt"
+          [ -f "$F" ] || { echo "没有 $F，跳过"; exit 0; }
+          cp "$F" /tmp/before.kt
+          sed -i 's/\r$//' "$F"
+          # 1) json["message"] 为 null 时会落进 when 的 else，else 里 raw.jsonArray 就成了可空调用
+          sed -i -E 's|^([[:space:]]*)val raw = json\["message"\][[:space:]]*$|\1val raw = json["message"] ?: return null|' "$F"
+          # 2) ?. 链结果是 String?，isNotBlank() 需要非空
+          sed -i -E 's|^([[:space:]]*)val name = seg\["data"\]\?\.jsonObject\?\.stringish\("name"\)$|\1val name = seg["data"]?.jsonObject?.stringish("name").orEmpty()|' "$F"
+          if cmp -s /tmp/before.kt "$F"; then
+            echo "仓库里的文件已经是修复版，无需修补"
+          else
+            echo "⚠ 仓库里是旧版，已自动修补以下两行："
+            diff /tmp/before.kt "$F" || true
+          fi
+
       # --no-configuration-cache 必须加：签名配置在 Gradle 配置阶段求值，而 setup-gradle
       # 会缓存 ~/.gradle（含 configuration cache）。不加这个参数，一旦第一次构建时
       # secret 还没配好，缓存里就固化了「用 debug 签名」的结果，后面 secret 配对也可能不生效。
