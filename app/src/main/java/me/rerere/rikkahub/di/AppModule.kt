@@ -143,8 +143,8 @@ val appModule = module {
 
     // QQ 机器人：反向 WebSocket 收消息 → 判定要不要答 → 交给 ChatService 生成 → 回投 QQ。
     // 依赖 ChatService，必须注册在它后面。
-    single { QQBotSocketClient(scope = get()) }
-    single { QQOfficialSocketClient(scope = get()) }
+    single { QQBotSocketClient(scope = get<AppScope>()) }
+    single { QQOfficialSocketClient(scope = get<AppScope>()) }
 
     single {
         QQBotGateway(

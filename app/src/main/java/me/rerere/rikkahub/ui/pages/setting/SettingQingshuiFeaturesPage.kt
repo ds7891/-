@@ -596,10 +596,18 @@ private fun QQBotCard(
     providers: List<ProviderSetting>,
     onUpdate: (QQBotConfig) -> Unit,
 ) {
-    // 直接注入 Gateway：连接状态和收发日志都在它身上，不这么做就只能对着灰色按钮猜
-    val gateway: me.rerere.rikkahub.data.qqbot.QQBotGateway = org.koin.compose.koinInject()
-    val linkStatus by gateway.status.collectAsStateWithLifecycle()
-    val events by gateway.recentEvents.collectAsStateWithLifecycle()
+    // Gateway 提供连接状态与收发日志。这里刻意用 runCatching 而不是 koinInject()：
+    // koinInject 在拿不到定义时会在组合阶段直接抛，整页闪退且看不到任何提示；
+    // 降级成 null 后只是不显示状态区，其余配置项照常可用。
+    val gateway: me.rerere.rikkahub.data.qqbot.QQBotGateway? = remember {
+        runCatching {
+            org.koin.java.KoinJavaComponent.get(me.rerere.rikkahub.data.qqbot.QQBotGateway::class.java)
+        }.getOrNull()
+    }
+    val linkStatus by (gateway?.status ?: kotlinx.coroutines.flow.MutableStateFlow("不可用"))
+        .collectAsStateWithLifecycle()
+    val events by (gateway?.recentEvents ?: kotlinx.coroutines.flow.MutableStateFlow(emptyList<String>()))
+        .collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
     var testing by remember { mutableStateOf(false) }
     var sending by remember { mutableStateOf(false) }
@@ -1057,7 +1065,7 @@ private fun QQBotCard(
                                 result = "正在鉴权…"
                                 scope.launch {
                                     result = if (official) {
-                                        gateway.testConnect(config)
+                                        gateway?.testConnect(config) ?: "QQ 服务未就绪，重启清水后再试"
                                     } else {
                                         val st = QQBotClient.getLoginInfo(config)
                                         if (st.reachable) "已连上：${st.nickname.ifBlank { "QQ ${st.selfId}" }}" else "连不上：${st.detail}"
@@ -1076,7 +1084,7 @@ private fun QQBotCard(
                                 result = "正在发送…"
                                 scope.launch {
                                     result = if (official) {
-                                        gateway.testSend(config)
+                                        gateway?.testSend(config) ?: "QQ 服务未就绪，重启清水后再试"
                                     } else {
                                         val sent = QQBotClient.sendText(config, "【清水】投递测试，看到这条说明配置没问题。")
                                         when (sent) {
