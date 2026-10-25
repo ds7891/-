@@ -187,6 +187,22 @@ jobs:
 
 
 
+      # 上一轮我给过文件名里带 __ 的扁平副本（为了绕开 .github 隐藏目录），
+      # 那种文件如果被复制进源码目录，同一个包内就会出现两份同名函数，
+      # 报 Overload resolution ambiguity —— 而且编译器不会告诉你是哪个文件多余。
+      # 这里直接点名，避免你再靠猜去删。
+      - name: Guard duplicated flat-named sources
+        run: |
+          set -uo pipefail
+          bad=$(find . -path './.git' -prune -o -type f \( -name '*__*.kt' -o -name '*__*.yml' \) -print 2>/dev/null | head -20)
+          if [ -n "$bad" ]; then
+            echo "::error::仓库里有扁平命名的源码副本，会造成重复声明，请把下面这些全部删除"
+            printf '%s\n' "$bad"
+            echo "（正确文件名不带 __，例如 SettingQingshuiFeaturesPage.kt，不是 app__src__...__SettingQingshuiFeaturesPage.kt）"
+            exit 1
+          fi
+          echo "没有扁平命名副本"
+
       # 自动修补已知的两处可空接收者写法。
       # 幂等：文件已经是修复版时 sed 匹配不到，什么都不改；是旧版时当场补上，
       # 并把差异打进日志 —— 这样既能直接构建通过，也能一眼看出仓库里到底是哪个版本。

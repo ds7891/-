@@ -834,6 +834,13 @@ data class QQBotConfig(
     // ---------------- 官方 QQ 机器人 ----------------
     val appId: String = "",
     val appSecret: String = "",
+    /**
+     * 沙箱环境。
+     *
+     * 官方机器人在「发布上线」之前只能用 sandbox 域名，用正式域名会一路 401 / 找不到群 ——
+     * 自用场景基本都停在沙箱阶段，所以默认开。后台走完发布流程后再关掉切正式域名。
+     */
+    val sandbox: Boolean = true,
     /** 展示给另一台手机扫码配对的链接（从 q.qq.com 沙箱页复制） */
     val pairingQrText: String = "",
 

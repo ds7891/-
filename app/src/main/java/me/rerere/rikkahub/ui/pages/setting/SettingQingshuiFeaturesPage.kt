@@ -596,6 +596,10 @@ private fun QQBotCard(
     providers: List<ProviderSetting>,
     onUpdate: (QQBotConfig) -> Unit,
 ) {
+    // 直接注入 Gateway：连接状态和收发日志都在它身上，不这么做就只能对着灰色按钮猜
+    val gateway: me.rerere.rikkahub.data.qqbot.QQBotGateway = org.koin.compose.koinInject()
+    val linkStatus by gateway.status.collectAsStateWithLifecycle()
+    val events by gateway.recentEvents.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
     var testing by remember { mutableStateOf(false) }
     var sending by remember { mutableStateOf(false) }
@@ -682,6 +686,15 @@ private fun QQBotCard(
                             modifier = Modifier.padding(top = 4.dp),
                         )
                     }
+                },
+            )
+            item(
+                headlineContent = { Text("沙箱环境") },
+                supportingContent = {
+                    Text("机器人没走完「发布上线」流程前必须开着：沙箱走 sandbox.api.sgroup.qq.com，正式走 api.sgroup.qq.com。用错域名的表现是密钥明明对、却一路 401 或找不到群。自用基本都停在沙箱阶段。")
+                },
+                trailingContent = {
+                    Switch(checked = config.sandbox, onCheckedChange = { onUpdate(config.copy(sandbox = it)) })
                 },
             )
             item(
@@ -974,6 +987,56 @@ private fun QQBotCard(
             },
         )
         item(
+            headlineContent = { Text("当前状态") },
+            supportingContent = {
+                Column {
+                    Text(
+                        text = linkStatus,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                    if (config.protocol == QQBotProtocol.QQ_OFFICIAL) {
+                        Text(
+                            text = "环境：${if (config.sandbox) "沙箱 sandbox" else "正式"}" +
+                                " · openid：群 ${if (config.lastGroupOpenid.isBlank()) "未获取" else "已获取"}" +
+                                " / 私聊 ${if (config.lastUserOpenid.isBlank()) "未获取" else "已获取"}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 4.dp),
+                        )
+                    }
+                    if (events.isNotEmpty()) {
+                        Text(
+                            text = "最近收发记录",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.padding(top = 10.dp),
+                        )
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 4.dp)
+                                .background(
+                                    MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                                    RoundedCornerShape(8.dp),
+                                )
+                                .padding(8.dp)
+                                .heightIn(max = 180.dp)
+                                .verticalScroll(rememberScrollState()),
+                        ) {
+                            events.forEach { line ->
+                                Text(
+                                    text = line,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
+                }
+            },
+        )
+        item(
             headlineContent = { Text("自检") },
             supportingContent = {
                 Column {
@@ -986,66 +1049,45 @@ private fun QQBotCard(
                         )
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        // 按钮一律可点：置灰只会让人以为功能坏了，点下去说清缺什么才有用
                         TextButton(
-                            enabled = !testing && config.canSend,
+                            enabled = !testing,
                             onClick = {
                                 testing = true
-                                result = "正在连接…"
+                                result = "正在鉴权…"
                                 scope.launch {
-                                    val status = if (official) {
-                                        QQOfficialClient.probe(config)
+                                    result = if (official) {
+                                        gateway.testConnect(config)
                                     } else {
-                                        QQBotClient.getLoginInfo(config)
-                                    }
-                                    result = if (status.reachable) {
-                                        "鉴权通过：${status.nickname.ifBlank { "AppID ${status.selfId}" }}"
-                                    } else {
-                                        "失败：${status.detail}"
+                                        val st = QQBotClient.getLoginInfo(config)
+                                        if (st.reachable) "已连上：${st.nickname.ifBlank { "QQ ${st.selfId}" }}" else "连不上：${st.detail}"
                                     }
                                     testing = false
                                 }
                             },
                         ) {
-                            if (testing) {
-                                CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
-                            } else {
-                                Text(if (official) "测试 AppID 密钥" else "测试连接")
-                            }
+                            if (testing) CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
+                            else Text(if (official) "测试 AppID 密钥" else "测试连接")
                         }
                         TextButton(
-                            enabled = !sending && config.canSend &&
-                                    (official && (config.lastGroupOpenid.isNotBlank() || config.lastUserOpenid.isNotBlank())
-                                            || !official && config.hasTarget),
+                            enabled = !sending,
                             onClick = {
                                 sending = true
                                 result = "正在发送…"
                                 scope.launch {
-                                    val sent = if (official) {
-                                        QQOfficialClient.sendText(
-                                            config = config,
-                                            text = "【清水】投递测试，看到这条说明密钥和链路都没问题。",
-                                            groupOpenid = config.lastGroupOpenid,
-                                            userOpenid = if (config.lastGroupOpenid.isBlank()) config.lastUserOpenid else "",
-                                        )
+                                    result = if (official) {
+                                        gateway.testSend(config)
                                     } else {
-                                        QQBotClient.sendText(config, "【清水】投递测试，看到这条说明配置没问题。")
-                                    }
-                                    result = when (sent) {
-                                        is QQBotSendResult.Sent -> "已发送到 ${sent.targetLabel}"
-                                        is QQBotSendResult.Failed -> "发送失败：[${sent.code}] ${sent.reason}"
+                                        val sent = QQBotClient.sendText(config, "【清水】投递测试，看到这条说明配置没问题。")
+                                        when (sent) {
+                                            is QQBotSendResult.Sent -> "已发送到 ${sent.targetLabel}"
+                                            is QQBotSendResult.Failed -> "发送失败：[${sent.code}] ${sent.reason}"
+                                        }
                                     }
                                     sending = false
                                 }
                             },
                         ) { Text("发一条测试消息") }
-                    }
-                    if (official && config.inboundEnabled && config.lastGroupOpenid.isBlank() && config.lastUserOpenid.isBlank()) {
-                        Text(
-                            text = "还没收到过任何消息，所以暂时没有可推送的 openid —— 先在群里 @ 它一次。",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.tertiary,
-                            modifier = Modifier.padding(top = 8.dp),
-                        )
                     }
                 }
             },
