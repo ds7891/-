@@ -50,6 +50,7 @@ import me.rerere.rikkahub.data.datastore.QQBotProtocol
 import me.rerere.rikkahub.data.datastore.QingshuiToolProtocol
 import me.rerere.rikkahub.data.datastore.WhitewashLevel
 import me.rerere.rikkahub.data.qqbot.QQBotClient
+import me.rerere.rikkahub.data.qqbot.QQBotGateway
 import me.rerere.rikkahub.data.qqbot.QQBotSendResult
 import me.rerere.rikkahub.data.qqbot.QQOfficialClient
 import me.rerere.rikkahub.ui.components.ai.ModelSelector
@@ -60,6 +61,7 @@ import me.rerere.rikkahub.ui.components.ui.Select
 import me.rerere.rikkahub.ui.theme.CustomColors
 import me.rerere.rikkahub.utils.plus
 import org.koin.androidx.compose.koinViewModel
+import org.koin.java.KoinJavaComponent.getKoin
 
 /** AI 任务托管可选的最大轮次。 */
 private val TASK_HOSTING_ROUND_OPTIONS = listOf(5, 10, 20, 30, 50)
@@ -596,13 +598,13 @@ private fun QQBotCard(
     providers: List<ProviderSetting>,
     onUpdate: (QQBotConfig) -> Unit,
 ) {
-    // Gateway 提供连接状态与收发日志。这里刻意用 runCatching 而不是 koinInject()：
-    // koinInject 在拿不到定义时会在组合阶段直接抛，整页闪退且看不到任何提示；
+    // Gateway 提供连接状态与收发日志。用 runCatching 包一层而不是 koinInject()：
+    // 后者在拿不到定义时会在组合阶段直接抛，整页闪退且屏幕上没有任何提示。
     // 降级成 null 后只是不显示状态区，其余配置项照常可用。
-    val gateway: me.rerere.rikkahub.data.qqbot.QQBotGateway? = remember {
-        runCatching {
-            org.koin.java.KoinJavaComponent.get(me.rerere.rikkahub.data.qqbot.QQBotGateway::class.java)
-        }.getOrNull()
+    // 取实例用项目里已验证过的 reified 写法（getKoin().get<T>()）——
+    // KoinJavaComponent.get(Class) 返回平台类型，会让 runCatching 的 R 推断不出来。
+    val gateway: QQBotGateway? = remember {
+        runCatching { getKoin().get<QQBotGateway>() }.getOrNull()
     }
     val linkStatus by (gateway?.status ?: kotlinx.coroutines.flow.MutableStateFlow("不可用"))
         .collectAsStateWithLifecycle()
