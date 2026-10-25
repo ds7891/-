@@ -20,6 +20,8 @@ import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.repository.ConversationRepository
 import me.rerere.rikkahub.service.ChatService
+import kotlinx.datetime.Clock
+import kotlinx.datetime.toLocalDateTime
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.uuid.Uuid
 
@@ -50,6 +52,61 @@ class QQBotGateway(
     private val statusText = MutableStateFlow("未启动")
     val status = statusText.asStateFlow()
 
+    /**
+     * 最近若干条连接与收发记录，设置页直接显示。
+     *
+     * 之所以要做这个：官方机器人「填了密钥却没反应」的原因很多（沙箱域名、后台没开长连接、
+     * intents 没申请、还没被加进体验群），只看一个开关根本判断不出卡在哪一环。
+     * 有日志就能一眼看出是连不上、连上了没事件、还是有事件但没答。
+     */
+    private val _recentEvents = MutableStateFlow<List<String>>(emptyList())
+    val recentEvents = _recentEvents.asStateFlow()
+
+    private fun logEvent(line: String) {
+        val stamp = Clock.System.now().toLocalDateTime(kotlinx.datetime.TimeZone.currentSystemDefault()).time
+            .toString().take(8)
+        _recentEvents.update { (listOf("$stamp  $line") + it).take(15) }
+    }
+
+    /** 设置页「测试连接」：把结果整理成人能看懂的一句话。 */
+    suspend fun testConnect(config: QQBotConfig): String {
+        if (config.appId.isBlank() || config.appSecret.isBlank()) return "AppID 或 AppSecret 还没填"
+        logEvent("测试连接（${if (config.sandbox) "沙箱" else "正式"}域名）")
+        val result = QQOfficialClient.probe(config)
+        val text = if (result.reachable) {
+            "鉴权通过，token 能换到。环境：${if (config.sandbox) "沙箱" else "正式"}"
+        } else {
+            "鉴权失败：${result.detail}"
+        }
+        logEvent(text)
+        return text
+    }
+
+    /** 设置页「发一条测试消息」：官方协议下只能被动回复，所以要有最近的 message_id。 */
+    suspend fun testSend(config: QQBotConfig): String {
+        if (config.appId.isBlank() || config.appSecret.isBlank()) return "AppID 或 AppSecret 还没填"
+        val group = config.lastGroupOpenid
+        val user = config.lastUserOpenid
+        if (group.isBlank() && user.isBlank()) {
+            val tip = "还没有可投递的目标：官方机器人不给「主动发消息」开放自由目标，" +
+                "必须先在沙箱体验群里 @ 它一次（或私聊），拿到 openid 后才能回。"
+            logEvent(tip)
+            return tip
+        }
+        val result = QQOfficialClient.sendText(
+            config = config,
+            text = "【清水】链路自检：看到这条说明收发都通了。",
+            groupOpenid = group,
+            userOpenid = if (group.isBlank()) user else "",
+        )
+        val text = when (result) {
+            is QQBotSendResult.Sent -> "已发送到 ${result.targetLabel}"
+            is QQBotSendResult.Failed -> "发送失败：[${result.code}] ${result.reason}"
+        }
+        logEvent(text)
+        return text
+    }
+
     /** 会话 → 待回复队列。群里连问两句会排两次生成，用队列才不会被后者覆盖目标。 */
     private val pendingReplies = MutableStateFlow<Map<Uuid, List<QQBotInbound>>>(emptyMap())
 
@@ -60,6 +117,10 @@ class QQBotGateway(
     /** 当前正在跑的是哪个协议的连接。 */
     @Volatile
     private var runningProtocol: QQBotProtocol? = null
+
+    /** 只在状态真的变化时记一条，避免重连抖动刷屏。 */
+    @Volatile
+    private var lastLoggedState: String = ""
 
     init {
         scope.launch(Dispatchers.Default) {
@@ -85,6 +146,15 @@ class QQBotGateway(
             ) { a, b, settings ->
                 val cfg = settings.qqBotConfig
                 val state = if (cfg.protocol == QQBotProtocol.QQ_OFFICIAL) b else a
+                if (state is QQBotLinkState.Online && lastLoggedState != "online") {
+                    logEvent("长连接已建立（${state.selfId.ifBlank { "官方" }}）")
+                    lastLoggedState = "online"
+                } else if (state is QQBotLinkState.Offline) {
+                    if (lastLoggedState != "offline:${state.reason}") logEvent("连接断开：${state.reason}")
+                    lastLoggedState = "offline:${state.reason}"
+                } else if (state is QQBotLinkState.Idle && lastLoggedState != "idle") {
+                    lastLoggedState = "idle"
+                }
                 renderStatus(cfg, state)
             }.collect { statusText.value = it }
         }
@@ -152,6 +222,10 @@ class QQBotGateway(
         pendingReplies.update { map ->
             map + (conversationId to (map[conversationId].orEmpty() + inbound))
         }
+        logEvent(
+            "收到消息 ← ${inbound.bindingKey.take(26)}" +
+                if (inbound.text.isBlank()) "（空正文）" else "「${inbound.text.take(24)}」",
+        )
         chatService.sendMessage(
             conversationId = conversationId,
             content = listOf(UIMessagePart.Text(QQBotPersona.promptFor(inbound))),
@@ -344,8 +418,14 @@ class QQBotGateway(
             atUserId = "",
         )
         when (result) {
-            is QQBotSendResult.Sent -> Log.i(TAG, "已回复 ${result.targetLabel}")
-            is QQBotSendResult.Failed -> Log.w(TAG, "回复 ${inbound.bindingKey} 失败：[${result.code}] ${result.reason}")
+            is QQBotSendResult.Sent -> {
+                Log.i(TAG, "已回复 ${result.targetLabel}")
+                logEvent("已回复 → ${result.targetLabel}")
+            }
+            is QQBotSendResult.Failed -> {
+                Log.w(TAG, "回复 ${inbound.bindingKey} 失败：[${result.code}] ${result.reason}")
+                logEvent("回复失败：[${result.code}] ${result.reason}")
+            }
         }
     }
 

@@ -39,6 +39,13 @@ import java.util.concurrent.TimeUnit
 
 private const val OFFICIAL_API_HOST = "https://api.sgroup.qq.com"
 
+/** 沙箱域名：机器人未发布上线时必须走这里，否则鉴权能过但接口全部不可用。 */
+private const val OFFICIAL_SANDBOX_HOST = "https://sandbox.api.sgroup.qq.com"
+
+/** 按 sandbox 标记选域名。 */
+internal fun officialHost(sandbox: Boolean): String =
+    if (sandbox) OFFICIAL_SANDBOX_HOST else OFFICIAL_API_HOST
+
 
 /**
  * 腾讯官方 QQ 机器人（q.qq.com 申请的 AppID / AppSecret）。
@@ -160,7 +167,7 @@ object QQOfficialClient {
         label: String,
     ): QQBotSendResult {
         val request = Request.Builder()
-            .url("$OFFICIAL_API_HOST$path")
+            .url("${officialHost(config.sandbox)}$path")
             .post(body.toRequestBody(JSON_TYPE.toMediaType()))
             .header("Authorization", "QQBot $token")
             .build()
@@ -254,7 +261,7 @@ class QQOfficialSocketClient(private val scope: CoroutineScope) {
                 delay(minOf(2_000L * attempt, 30_000L))
                 continue
             }
-            val gateway = fetchGateway(token).getOrElse { err ->
+            val gateway = fetchGateway(token, config.sandbox).getOrElse { err ->
                 _state.value = QQBotLinkState.Offline("取网关失败：${err.message}")
                 attempt++
                 delay(minOf(2_000L * attempt, 30_000L))
@@ -355,10 +362,10 @@ class QQOfficialSocketClient(private val scope: CoroutineScope) {
         )
     }
 
-    private suspend fun fetchGateway(token: String): Result<String> = runCatching {
+    private suspend fun fetchGateway(token: String, sandbox: Boolean): Result<String> = runCatching {
         kotlinx.coroutines.runInterruptible(Dispatchers.IO) {
             val req = Request.Builder()
-                .url("$OFFICIAL_API_HOST/gateway")
+                .url("${officialHost(sandbox)}/gateway")
                 .header("Authorization", "QQBot $token")
                 .build()
             http.newCall(req).execute().use { resp ->
